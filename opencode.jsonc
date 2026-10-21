@@ -18,6 +18,7 @@
     "C:/Users/LucianoSoares/.config/opencode/rules/persistent-logs.md",
     "C:/Users/LucianoSoares/.config/opencode/rules/pr-markdown-task-lists.md",
     "C:/Users/LucianoSoares/.config/opencode/rules/response-hierarchy.md",
+    "C:/Users/LucianoSoares/.config/opencode/rules/shell-usage-policy.md",
     "C:/Users/LucianoSoares/.config/opencode/rules/test-and-check-before-done.md",
     // Regras por projeto: carrega as .mdc/.md de .cursor/rules do repo atual (fonte única Cursor+opencode).
     // Resolvido contra a raiz do projeto (globUp do cwd até a worktree) — vale para qualquer repo.
