@@ -35,10 +35,49 @@
     "grep": "allow",
     "list": "allow",
     "edit": "allow",
+    // Shell: "*" vem primeiro porque a ultima regra que casa vence.
+    // Allowlist curta e especifica: comandos do fluxo git e testes conhecidos.
+    // Fora daqui, pede aprovacao. Declarado nas duas chaves (bash e shell) para
+    // nao depender de qual nome a versao instalada reconhece.
     "bash": {
-      "ls": "allow",
-      "ls *": "allow",
-      "*": "ask"
+      "*": "ask",
+      "ls*": "allow",
+      "git status*": "allow",
+      "git diff*": "allow",
+      "git log*": "allow",
+      "git show*": "allow",
+      "git add *": "allow",
+      "git commit *": "allow",
+      "git checkout *": "allow",
+      "git switch *": "allow",
+      "git merge *": "allow",
+      "pytest*": "allow",
+      "python -m pytest*": "allow",
+      "python -m unittest*": "allow",
+      "npm test*": "allow",
+      "npm run test*": "allow",
+      "npx jest*": "allow",
+      "npx vitest*": "allow"
+    },
+    "shell": {
+      "*": "ask",
+      "ls*": "allow",
+      "git status*": "allow",
+      "git diff*": "allow",
+      "git log*": "allow",
+      "git show*": "allow",
+      "git add *": "allow",
+      "git commit *": "allow",
+      "git checkout *": "allow",
+      "git switch *": "allow",
+      "git merge *": "allow",
+      "pytest*": "allow",
+      "python -m pytest*": "allow",
+      "python -m unittest*": "allow",
+      "npm test*": "allow",
+      "npm run test*": "allow",
+      "npx jest*": "allow",
+      "npx vitest*": "allow"
     },
     "websearch": "ask",
     "webfetch": "ask"
@@ -63,6 +102,14 @@
           "~/.opencode/plan/*": "allow"
         },
         "bash": {
+          "*": "deny",
+          "ls*": "allow",
+          "git status*": "allow",
+          "git log*": "allow",
+          "git diff*": "allow",
+          "git show*": "allow"
+        },
+        "shell": {
           "*": "deny",
           "ls*": "allow",
           "git status*": "allow",
