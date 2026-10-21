@@ -28,7 +28,7 @@
   ],
   // Espelha cli-config.json: approvalMode "allowlist" com apenas Shell(ls) liberado.
   // Excecao pedida: edit = "allow" (revisao via /undo, apoiada em "snapshot": true abaixo).
-  // Excecao pedida: o modo build prossegue sem perguntar — ver agent.build abaixo.
+  // O modo build herda estas regras (sem override): shell pede aprovacao fora da allowlist.
   "permission": {
     "read": "allow",
     "glob": "allow",
@@ -43,16 +43,16 @@
     "websearch": "ask",
     "webfetch": "ask"
   },
-  // Overrides por agente: build e explore (subagente do build) liberados sem prompts.
-  // O plan mantém as regras próprias abaixo; os demais herdam o "permission" global.
-  // Para apertar um ponto especifico, troque "allow" por objeto por ferramenta, ex:
-  //   "permission": { "bash": "allow", "external_directory": "ask", "webfetch": "allow" }
+  // Overrides por agente. O build NAO tem override: herda o "permission" global (edit liberado
+  // dentro do repo; shell so com allowlist; caminhos externos pedem aprovacao pelo default "ask").
+  // O explore e somente leitura: nao edita e nao executa shell.
   "agent": {
-    "build": {
-      "permission": "allow"
-    },
     "explore": {
-      "permission": "allow"
+      "permission": {
+        "edit": "deny",
+        "bash": "deny",
+        "shell": "deny"
+      }
     },
     "plan": {
       "permission": {
