@@ -10,6 +10,13 @@ permission:
     "git log*": allow
     "git diff*": allow
     "git show*": allow
+  shell:
+    "*": deny
+    "ls*": allow
+    "git status*": allow
+    "git log*": allow
+    "git diff*": allow
+    "git show*": allow
   task: deny
   webfetch: allow
   websearch: allow
