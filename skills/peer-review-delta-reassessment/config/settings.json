@@ -1,0 +1,6 @@
+{
+  "orchestrator_skill_root": "C:/Users/LucianoSoares/.config/opencode/skills/peer-review-orchestrator",
+  "task_model_map_relative": "config/task_model_map.json",
+  "llms_peer_review_process_root": "C:/Users/LucianoSoares/Projects/llms_peer_review/process",
+  "notes": "Product-wide delta: program_changes/{YYYYMMDDTHHMMSSZ}_{cause}/. Impact via per-domain subagents; execution via orchestrator revision rounds (phases 0–5). Legacy changes_log + phases 6–10 obsolete."
+}

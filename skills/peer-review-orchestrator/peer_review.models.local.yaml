@@ -1,0 +1,7 @@
+# Optional machine-specific overrides (same format as models.yaml).
+# Only list slots you want to change — merged on top of models.yaml.
+# Same-vendor collisions are rejected (one OpenAI / Anthropic / … per review).
+# See models-rationale.md for the global cost–benefit lineup.
+#
+# Example: force Anthropic on llm3 (ok if no other Anthropic seat):
+# llm3: claude-sonnet-5-thinking-high

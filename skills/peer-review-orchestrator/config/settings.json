@@ -1,0 +1,41 @@
+{
+  "llms_peer_review_process_root": "C:/Users/LucianoSoares/Projects/llms_peer_review/process",
+  "shortlist": {
+    "billing": "cursor",
+    "track": "capability_weighted",
+    "relative_to_repo": "tools/llm_selection/reports/ranking_shortlist_cursor_capability_weighted_latest.json",
+    "notes": "Personal skill reads this absolute-ish path via llms_peer_review repo root (parent of process/), not the current workspace. Override with --shortlist or --llms-root. Proposer/critic phases use this value track (quality/cost). Phase-5 leader uses leader_selection instead."
+  },
+  "leader_selection": {
+    "score_basis": "quality",
+    "among_participants_only": true,
+    "calculation_relative_to_repo": "tools/llm_selection/reports/ranking_calculation_latest.json",
+    "notes": "Phase 5 leader = highest pure quality (calculation.quality.value) among the phase-2 proposer roster / phase0 participants — no /est_cost. Does not require a quality-only shortlist from llms_peer_review; the skill re-ranks from ranking_calculation_latest.json. If that file is missing, falls back to the capability_weighted shortlist and sets leader_selection_error."
+  },
+  "dispatch": {
+    "proposer_slots": 8,
+    "unique_provider": true,
+    "phase_to_application_phase": {
+      "0": "2",
+      "1": "2",
+      "2": "2",
+      "3": "3",
+      "4": "2",
+      "5": "5"
+    },
+    "notes": "Phase 1/4 reuse phase-2 proposer ranking. Phase 3 prefer *_phase3_* / generic_phase3_critique. Phase 5 prefer leader apps. Revisions use the same phases 0–5 under a new timestamped round (see revision_rounds.md). unique_provider=true: never assign two Task families from the same vendor (OpenAI, Anthropic, …) in one peer-review roster. proposer_slots is the hard ceiling when roster_sizing.max_slots is unset."
+  },
+  "roster_sizing": {
+    "min_slots": 4,
+    "max_slots": 8,
+    "tau_vs_leader": 0.15,
+    "rho_vs_prev": 0.40,
+    "notes": "Auto-size proposer count from unique-provider shortlist scores. Always take min_slots (fill with fallback if needed). Beyond min_slots, include next only if s_k/s_1 >= tau AND s_k/s_{k-1} >= rho. Cliff (rho) is never evaluated inside the minimum floor."
+  },
+  "model_resolution_precedence": [
+    "review_peer_review.models.yaml",
+    "skill_peer_review.models.local.yaml",
+    "shortlist_cursor_capability_weighted",
+    "skill_models.yaml_fallback"
+  ]
+}

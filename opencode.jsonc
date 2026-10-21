@@ -1,0 +1,79 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // Migrado de ~/.cursor (regras .mdc alwaysApply) e ~/.cursor/cli-config.json.
+  // Regras sempre ativas: ~/.config/opencode/rules/*.md
+  // Skills: ~/.config/opencode/skills/* (inclui as 8 skills vindas de ~/.cursor/skills)
+  "instructions": [
+    "C:/Users/LucianoSoares/.config/opencode/rules/always-commit-work.md",
+    "C:/Users/LucianoSoares/.config/opencode/rules/ask-for-permission.md",
+    "C:/Users/LucianoSoares/.config/opencode/rules/care-git-flow.md",
+    "C:/Users/LucianoSoares/.config/opencode/rules/completed-only-when-tested.md",
+    "C:/Users/LucianoSoares/.config/opencode/rules/dont-assume-jargon.md",
+    "C:/Users/LucianoSoares/.config/opencode/rules/dual-architecture-practical.md",
+    "C:/Users/LucianoSoares/.config/opencode/rules/easy-to-run.md",
+    "C:/Users/LucianoSoares/.config/opencode/rules/expose-settings.md",
+    "C:/Users/LucianoSoares/.config/opencode/rules/fluent-readable-prose.md",
+    "C:/Users/LucianoSoares/.config/opencode/rules/git-graph-no-loose-tips.md",
+    "C:/Users/LucianoSoares/.config/opencode/rules/no-hard-wrap-markdown.md",
+    "C:/Users/LucianoSoares/.config/opencode/rules/persistent-logs.md",
+    "C:/Users/LucianoSoares/.config/opencode/rules/pr-markdown-task-lists.md",
+    "C:/Users/LucianoSoares/.config/opencode/rules/response-hierarchy.md",
+    "C:/Users/LucianoSoares/.config/opencode/rules/test-and-check-before-done.md",
+    // Regras por projeto: carrega as .mdc/.md de .cursor/rules do repo atual (fonte única Cursor+opencode).
+    // Resolvido contra a raiz do projeto (globUp do cwd até a worktree) — vale para qualquer repo.
+    ".cursor/rules/*.mdc",
+    ".cursor/rules/*.md",
+    ".cursor/rules/**/*.mdc",
+    ".cursor/rules/**/*.md"
+  ],
+  // Espelha cli-config.json: approvalMode "allowlist" com apenas Shell(ls) liberado.
+  // Excecao pedida: edit = "allow" (revisao via /undo, apoiada em "snapshot": true abaixo).
+  // Excecao pedida: o modo build prossegue sem perguntar — ver agent.build abaixo.
+  "permission": {
+    "read": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "edit": "allow",
+    "bash": {
+      "ls": "allow",
+      "ls *": "allow",
+      "*": "ask"
+    },
+    "websearch": "ask",
+    "webfetch": "ask"
+  },
+  // Overrides por agente: build e explore (subagente do build) liberados sem prompts.
+  // O plan mantém as regras próprias abaixo; os demais herdam o "permission" global.
+  // Para apertar um ponto especifico, troque "allow" por objeto por ferramenta, ex:
+  //   "permission": { "bash": "allow", "external_directory": "ask", "webfetch": "allow" }
+  "agent": {
+    "build": {
+      "permission": "allow"
+    },
+    "explore": {
+      "permission": "allow"
+    },
+    "plan": {
+      "permission": {
+        "edit": {
+          "*": "deny",
+          ".opencode/plans/*.md": "allow",
+          "~/.local/share/opencode/plans/*": "allow",
+          "~/.opencode/plan/*": "allow"
+        },
+        "bash": {
+          "*": "deny",
+          "ls*": "allow",
+          "git status*": "allow",
+          "git log*": "allow",
+          "git diff*": "allow",
+          "git show*": "allow"
+        },
+        "task": "deny"
+      }
+    }
+  },
+  // Equivalente a cli-config.json "rewind": true (undo/revert de edições).
+  "snapshot": true
+}

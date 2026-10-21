@@ -1,0 +1,18 @@
+# Delta reassessment models (default roster)
+
+# Used when {REVIEW_ROOT}/peer_review_delta.models.yaml is absent.
+# Keys llm1..N map by index to sorted Phase 4 folder suffixes (or phase6 participants).
+# leader: phase 10 consolidation (multi); unused for single-drafter acceptance critic
+#          (resolve acceptance critic from non-drafter participants / phase0).
+#
+# Values must be Cursor Task `model` slugs (see peer-review-orchestrator
+# config/task_model_map.json task_allow_list). Prefer unique providers.
+#
+# Override per review: peer_review_delta.models.yaml under REVIEW_ROOT
+# Personal override: models.local.yaml in this skill folder (gitignored optional)
+
+llm1: gpt-5.6-luna-low
+llm2: claude-fable-5-thinking-high
+llm3: cursor-grok-4.5-high-fast
+llm4: composer-2.5-fast
+leader: claude-sonnet-5-thinking-high
