@@ -27,13 +27,13 @@
     ".cursor/rules/**/*.mdc",
     ".cursor/rules/**/*.md"
   ],
-  // Modo build com autonomia dentro do repo.
-  // Regra: a ULTIMA regra que casa vence. Por isso "*": "allow" vem primeiro e as excecoes
-  // "ask" vem depois. Shell e pedido de aprovacao apenas para: (a) caminhos absolutos ou
-  // relativos para fora do repo, (b) remocao/movimentacao destrutiva, (c) push/reset/config
-  // do git, (d) rede e instalacoes globais, (e) alteracoes no sistema operacional.
-  // Limitacao: e checagem por texto do comando, nao sandbox. Acesso de arquivo por
-  // read/edit/glob/grep fora do repo continua controlado por "external_directory".
+  // Paridade com os modos do Cursor (ver ~/.cursor/cli-config.json e docs do Cursor):
+  //   build = Agent  : edita e executa comandos sem pedir; pede aprovacao so para o risco real.
+  //   plan  = Plan   : pesquisa e escreve apenas o plano (.opencode/plans); shell so leitura.
+  //   ask   = Ask    : somente leitura, sem edicao; shell so leitura.
+  // Regra do opencode: a ULTIMA regra que casa vence. "*" fica primeiro e as excecoes depois.
+  // Caminhos fora do projeto nao sao filtrados por texto de comando: isso e feito por
+  // "external_directory" (o opencode pede aprovacao quando uma ferramenta toca fora do projeto).
   "permission": {
     "read": "allow",
     "glob": "allow",
@@ -42,18 +42,6 @@
     "edit": "allow",
     "bash": {
       "*": "allow",
-      // Caminhos absolutos (qualquer drive) e saidas do repo.
-      "*C:/*": "ask",
-      "*C:\\*": "ask",
-      "*c:/*": "ask",
-      "*c:\\*": "ask",
-      "*/home/*": "ask",
-      "*~*": "ask",
-      "*..*": "ask",
-      "*$env:*": "ask",
-      "*$HOME*": "ask",
-      "*%USERPROFILE%*": "ask",
-      "*%APPDATA%*": "ask",
       // Remocao e movimentacao destrutiva.
       "rm *": "ask",
       "rm": "ask",
@@ -75,7 +63,7 @@
       "git config*": "ask",
       "git remote*": "ask",
       "gh *": "ask",
-      // Rede e instalacoes.
+      // Rede e instalacoes globais.
       "curl*": "ask",
       "wget*": "ask",
       "Invoke-WebRequest*": "ask",
@@ -97,17 +85,6 @@
     },
     "shell": {
       "*": "allow",
-      "*C:/*": "ask",
-      "*C:\\*": "ask",
-      "*c:/*": "ask",
-      "*c:\\*": "ask",
-      "*/home/*": "ask",
-      "*~*": "ask",
-      "*..*": "ask",
-      "*$env:*": "ask",
-      "*$HOME*": "ask",
-      "*%USERPROFILE%*": "ask",
-      "*%APPDATA%*": "ask",
       "rm *": "ask",
       "rm": "ask",
       "rmdir*": "ask",
@@ -155,17 +132,9 @@
       "C:\\Users\\LucianoSoares\\Projects\\llms_peer_review\\**": "allow"
     }
   },
-  // Overrides por agente. O build NAO tem override: herda o "permission" global (edit liberado
-  // dentro do repo; shell liberado exceto os casos "ask" acima; caminhos externos pedem aprovacao).
-  // O explore e somente leitura: nao edita e nao executa shell.
   "agent": {
-    "explore": {
-      "permission": {
-        "edit": "deny",
-        "bash": "deny",
-        "shell": "deny"
-      }
-    },
+    // Build (= Agent do Cursor): sem override, herda o "permission" global acima.
+    // Plan (= Plan do Cursor): so escreve o plano; pesquisa com leitura, subagentes e shell de leitura.
     "plan": {
       "permission": {
         "edit": {
@@ -175,22 +144,116 @@
           "~/.opencode/plan/*": "allow"
         },
         "bash": {
-          "*": "deny",
+          "*": "ask",
           "ls*": "allow",
+          "cat *": "allow",
+          "head *": "allow",
+          "tail *": "allow",
+          "rg *": "allow",
+          "Get-Content*": "allow",
+          "Get-ChildItem*": "allow",
+          "Get-Item*": "allow",
+          "Get-Location*": "allow",
+          "Test-Path*": "allow",
+          "Select-Object*": "allow",
+          "Where-Object*": "allow",
+          "ForEach-Object*": "allow",
+          "Sort-Object*": "allow",
+          "Format-Table*": "allow",
+          "Out-String*": "allow",
           "git status*": "allow",
-          "git log*": "allow",
           "git diff*": "allow",
+          "git log*": "allow",
           "git show*": "allow"
         },
         "shell": {
-          "*": "deny",
+          "*": "ask",
           "ls*": "allow",
+          "cat *": "allow",
+          "head *": "allow",
+          "tail *": "allow",
+          "rg *": "allow",
+          "Get-Content*": "allow",
+          "Get-ChildItem*": "allow",
+          "Get-Item*": "allow",
+          "Get-Location*": "allow",
+          "Test-Path*": "allow",
+          "Select-Object*": "allow",
+          "Where-Object*": "allow",
+          "ForEach-Object*": "allow",
+          "Sort-Object*": "allow",
+          "Format-Table*": "allow",
+          "Out-String*": "allow",
           "git status*": "allow",
-          "git log*": "allow",
           "git diff*": "allow",
+          "git log*": "allow",
           "git show*": "allow"
         },
-        "task": "deny"
+        "task": "allow"
+      }
+    },
+    // Ask (= Ask do Cursor): somente leitura. Nao edita; shell so de leitura.
+    "ask": {
+      "mode": "primary",
+      "description": "Responde perguntas sobre o codigo sem editar arquivos (equivalente ao Ask do Cursor).",
+      "prompt": "Voce esta no modo Ask: responda perguntas e explique o codigo. Nao edite arquivos e nao execute comandos que alterem o estado do projeto.",
+      "permission": {
+        "edit": "deny",
+        "bash": {
+          "*": "ask",
+          "ls*": "allow",
+          "cat *": "allow",
+          "head *": "allow",
+          "tail *": "allow",
+          "rg *": "allow",
+          "Get-Content*": "allow",
+          "Get-ChildItem*": "allow",
+          "Get-Item*": "allow",
+          "Get-Location*": "allow",
+          "Test-Path*": "allow",
+          "Select-Object*": "allow",
+          "Where-Object*": "allow",
+          "ForEach-Object*": "allow",
+          "Sort-Object*": "allow",
+          "Format-Table*": "allow",
+          "Out-String*": "allow",
+          "git status*": "allow",
+          "git diff*": "allow",
+          "git log*": "allow",
+          "git show*": "allow"
+        },
+        "shell": {
+          "*": "ask",
+          "ls*": "allow",
+          "cat *": "allow",
+          "head *": "allow",
+          "tail *": "allow",
+          "rg *": "allow",
+          "Get-Content*": "allow",
+          "Get-ChildItem*": "allow",
+          "Get-Item*": "allow",
+          "Get-Location*": "allow",
+          "Test-Path*": "allow",
+          "Select-Object*": "allow",
+          "Where-Object*": "allow",
+          "ForEach-Object*": "allow",
+          "Sort-Object*": "allow",
+          "Format-Table*": "allow",
+          "Out-String*": "allow",
+          "git status*": "allow",
+          "git diff*": "allow",
+          "git log*": "allow",
+          "git show*": "allow"
+        },
+        "task": "allow"
+      }
+    },
+    // Explore: subagente somente leitura usado pelo build/plan. Nao edita e nao executa shell.
+    "explore": {
+      "permission": {
+        "edit": "deny",
+        "bash": "deny",
+        "shell": "deny"
       }
     }
   },
