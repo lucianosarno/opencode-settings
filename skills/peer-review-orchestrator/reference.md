@@ -133,6 +133,8 @@ Columns used:
 
 Phase 1 uses **all** strategist slots in table order.
 
+**Availability** table (`## Availability`, required): one row per participant slot (and the leader when not a participant) with `Result` = `available` and a `YYYYMMDDTHHMMSSZ` stamp in `Checked (UTC)`. `availability_gaps` in status lists every slot that fails; an empty list is the precondition for the roster approval. Revision rounds drop this section on copy (`init_round --kind revision`), so each round re-probes.
+
 Leader (phase 5): **Leader LLM** table → folder like `phase5_unified_answer_fable`
 (use the leader slot’s `folder_alias`).
 

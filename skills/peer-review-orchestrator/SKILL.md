@@ -76,6 +76,7 @@ python ~/.config/opencode/skills/peer-review-orchestrator/scripts/orchestrator.p
 | **NEEDS_USER stops the phase** | Do not start the next participant or next phase until resolved. |
 | **Domain precedence** | Domain `phases/phaseN_*.md` overrides generic `process/phases/phaseN_*.md`. See [reference.md](reference.md). |
 | **No silent model swap** | If a slug is missing from config or rejected by Task, stop and tell the user. |
+| **Availability before approval** | Phase 0 probes every participant (and the leader) before the roster goes to the user. `## Availability` must show `available` with a valid stamp for each slot; otherwise `status` keeps phase 0 open and reports `availability_gaps`. Revision rounds drop the copied section and must re-probe. |
 | **Shortlist before YAML fallback** | Dispatch `model` from cursor capability_weighted shortlist (Task-mapped). `models.yaml` only fills gaps. |
 | **One vendor per peer review** | Never assign two participants from the same provider (OpenAI, Anthropic, Cursor, …) in one review. Skip lower-ranked same-vendor rows; reject YAML overrides that collide. Prefer leaving a slot unresolved over violating this. |
 | **Auto roster size** | Default seat count from `roster_sizing` (min floor + tau/rho on scores). Cliff/retention apply only **after** `min_slots`. `--slots N` forces a count. |
@@ -168,7 +169,7 @@ Regenerate shortlist in the `llms_peer_review` repo: `python tools/llm_selection
 
 ```
 init-round → REVIEW_ROOT (timestamped)
-Phase 0  → phase0_setup.md + program_manifest.md      [pause if frame unclear]
+Phase 0  → availability probes → phase0_setup.md + program_manifest.md  [pause for roster approval]
 Phase 1  → propose ∥ → critique ∥ → revise ∥ → consolidate (leader)  [pause on stakeholder gate]
 Phase 2  → all participants in parallel + manifest + guard  [pause on NEEDS_USER]
 Phase 3  → all critics in parallel                  [pause on NEEDS_USER]
@@ -291,15 +292,30 @@ When the user says "continue peer review" or names a phase:
 
 ## Phase 0
 
-If `phase0_setup.md` is missing or incomplete (roles, domains, participants, leader):
+If `phase0_setup.md` is missing or incomplete (roles, domains, participants, leader, availability):
 
 - Run phase 0 yourself or via one subagent.
 - Prefer `resolve-shortlist --domain <d> --phase 2` (proposers) and `--phase 5` (leader)
   when naming participants.
 - Copy each slot’s `folder_alias` / `suggested_folder_suffix` and Task `model_slug` into
   the participants table (do **not** copy stale names from another domain’s phase0).
-- **Pause** until the user confirms the frame.
-- Do not start phase 1 until `phase0_setup.md` is complete and `alias_mismatches` is empty.
+- **Check availability before asking for approval.** A ranked model is not proven usable.
+  For each participant slot, and for the leader when it is not a participant, dispatch one
+  minimal probe through the same Task path the phases use: `model=<resolved slug>`, prompt
+  "reply with the single word OK". Do not run probes in parallel with real phase work.
+- Classify each failed probe with one error class: `connection` (network, DNS, timeout),
+  `api` (auth, quota, rate limit, HTTP 4xx), `server_unavailable` (HTTP 5xx, overloaded),
+  or `model_rejected` (Task refuses the slug). Record every slot in the `## Availability`
+  table of `phase0_setup.md` with `Result`, `Error class`, and a `YYYYMMDDTHHMMSSZ` stamp.
+- If a slot is unavailable, replace it with the next candidate from the same shortlist
+  (same vendor and folder-alias rules), probe the replacement, and note the failed attempt
+  under `## Notes`. If no replacement exists, tell the user the error class per LLM and ask
+  whether to retry later, accept fewer participants, or change the candidates.
+- **Pause** until the user confirms the frame. Present the roster for approval only when
+  `status` shows `availability_gaps: []` (the phase 0 gate). A `Result` other than
+  `available`, a placeholder row, or a copied section from an earlier round blocks it.
+- Do not start phase 1 until `phase0_setup.md` is complete, `availability_gaps` is empty,
+  and `alias_mismatches` is empty.
 
 ## Validation helpers
 
