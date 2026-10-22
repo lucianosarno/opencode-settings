@@ -3,14 +3,15 @@
 // O processo PowerShell roda em segundo plano (nao bloqueia a interface do OpenCode).
 import { spawn } from "node:child_process"
 import { readFileSync, existsSync } from "node:fs"
-import { join } from "node:path"
+import { join, isAbsolute } from "node:path"
 import { homedir } from "node:os"
 
-const CONFIG_PATH = join(homedir(), ".config", "opencode", "permission-sound.json")
+const CONFIG_DIR = join(homedir(), ".config", "opencode")
+const CONFIG_PATH = join(CONFIG_DIR, "permission-sound.json")
 
 const DEFAULTS = {
   enabled: true,
-  soundFile: "C:\\Windows\\Media\\Alarm01.wav",
+  soundFile: "sounds/Alarm09.wav",
   fallbackSystemSound: "Exclamation",
   events: ["permission.asked"],
 }
@@ -29,8 +30,12 @@ function loadSettings() {
 // Aspas simples dentro de string PowerShell se escapam dobrando.
 const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`
 
+// Caminhos relativos resolvem a partir da pasta de configuracao (ex.: sounds/Alarm09.wav),
+// para o repo funcionar em outra maquina. Caminhos absolutos continuam valendo.
+const resolveSoundPath = (p) => (isAbsolute(p) ? p : join(CONFIG_DIR, p))
+
 function buildScript(settings) {
-  const file = settings.soundFile
+  const file = resolveSoundPath(settings.soundFile)
   const fallback = settings.fallbackSystemSound
   return (
     `if (Test-Path -LiteralPath ${psQuote(file)}) {` +
