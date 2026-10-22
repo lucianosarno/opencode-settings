@@ -43,6 +43,20 @@
     "bash": {
       "*": "ask",
       "ls*": "allow",
+      "cat *": "allow",
+      "head *": "allow",
+      "tail *": "allow",
+      "Get-Content*": "allow",
+      "Get-ChildItem*": "allow",
+      "Get-Item*": "allow",
+      "Get-Location*": "allow",
+      "Test-Path*": "allow",
+      "Select-Object*": "allow",
+      "Where-Object*": "allow",
+      "ForEach-Object*": "allow",
+      "Sort-Object*": "allow",
+      "Format-Table*": "allow",
+      "Out-String*": "allow",
       "git status*": "allow",
       "git diff*": "allow",
       "git log*": "allow",
@@ -63,6 +77,20 @@
     "shell": {
       "*": "ask",
       "ls*": "allow",
+      "cat *": "allow",
+      "head *": "allow",
+      "tail *": "allow",
+      "Get-Content*": "allow",
+      "Get-ChildItem*": "allow",
+      "Get-Item*": "allow",
+      "Get-Location*": "allow",
+      "Test-Path*": "allow",
+      "Select-Object*": "allow",
+      "Where-Object*": "allow",
+      "ForEach-Object*": "allow",
+      "Sort-Object*": "allow",
+      "Format-Table*": "allow",
+      "Out-String*": "allow",
       "git status*": "allow",
       "git diff*": "allow",
       "git log*": "allow",
@@ -86,7 +114,8 @@
     // Escopo restrito: so esta arvore. Demais caminhos externos continuam em "ask".
     "external_directory": {
       "*": "ask",
-      "C:/Users/LucianoSoares/Projects/llms_peer_review/**": "allow"
+      "C:/Users/LucianoSoares/Projects/llms_peer_review/**": "allow",
+      "C:\\Users\\LucianoSoares\\Projects\\llms_peer_review\\**": "allow"
     }
   },
   // Overrides por agente. O build NAO tem override: herda o "permission" global (edit liberado
