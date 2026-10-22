@@ -1,26 +1,27 @@
 #!/usr/bin/env python3
 """Product-wide peer-review delta reassessment — program_changes, impact, execution.
 
-Layout:
+Layout (llms_peer_review process/standards/revision_rounds.md):
   {PEER_REVIEW_ROOT}/program_changes/changes/PC-YYYYMMDD-NNN_{meaning}.md
   {PEER_REVIEW_ROOT}/program_changes/{YYYYMMDDTHHMMSSZ}_{cause}/
-    change_pack.md
-    impact_assessment.md
-    impact_by_domain/{domain}.md
-    execution_log.md
+    reassessment.md        change_refs, run_status, touch_order (frozen at approval)
+    change_pack.md         index of the change ids of this run
+    impact_by_domain/{domain}.md   one `| PC-… | touch|no-touch | reason |` row per change id
+    impact_assessment.md   rollup written by rollup-impact
+    execution_log.md       one row per touch domain
 
-The change id is `PC-YYYYMMDD-NNN`. `{meaning}` is a short slug (same idea as `{cause}`
-on the run folder) so the filename shows what the change is about. Slug rules:
-llms_peer_review `process/standards/revision_rounds.md`.
+The timestamp prefix of the run folder is the review round id of every touch domain.
+Run status: draft → awaiting_plan_approval → approved → executing → complete (or abandoned).
 
 Examples:
-  python delta_orchestrator.py --peer-review-root path/to/peer_review record-change --meaning "taxonomy flexibility" --title "Taxonomy flexibility" --summary "Allow more than one taxonomy."
-  python delta_orchestrator.py --peer-review-root path/to/peer_review scaffold --cause taxonomy
-  python delta_orchestrator.py --peer-review-root … --program-dir … status
-  python delta_orchestrator.py --peer-review-root … --program-dir … list-domains
-  python delta_orchestrator.py --peer-review-root … --program-dir … rollup-impact
-  python delta_orchestrator.py --peer-review-root … --program-dir … next-action
-  python delta_orchestrator.py --peer-review-root … --program-dir … accept-domain --domain d01_scope
+  python delta_orchestrator.py --peer-review-root PEER record-change --meaning "taxonomy flexibility" --title "Taxonomy flexibility" --summary "Allow more than one taxonomy." --disposition accepted
+  python delta_orchestrator.py --peer-review-root PEER --cause taxonomy scaffold --change-id PC-20261015-001
+  python delta_orchestrator.py --peer-review-root PEER --program-dir PROG status
+  python delta_orchestrator.py --peer-review-root PEER --program-dir PROG rollup-impact
+  python delta_orchestrator.py --peer-review-root PEER --program-dir PROG approve-impact
+  python delta_orchestrator.py --peer-review-root PEER --program-dir PROG set-domain-status --domain d01_scope --status in_progress --round-id ROUND
+  python delta_orchestrator.py --peer-review-root PEER --program-dir PROG accept-domain --domain d01_scope
+  python delta_orchestrator.py --peer-review-root PEER changes-status
 """
 
 from __future__ import annotations
@@ -38,7 +39,6 @@ CONFIG_DIR = SKILL_DIR / "config"
 TEMPLATES_DIR = SKILL_DIR / "templates"
 
 PROGRAM_CHANGES_DIRNAME = "program_changes"
-TOUCH_RE = re.compile(r"(?im)^\s*(?:-\s*)?(?:\*\*)?verdict(?:\*\*)?\s*[:=]\s*(touch|no-touch)\b")
 SEVERITY_RE = re.compile(
     r"(?im)^\s*(?:-\s*)?(?:\*\*)?severity(?:\*\*)?\s*[:=]\s*(critical|high|medium|low|none)\b"
 )
@@ -249,82 +249,178 @@ def list_consumer_domains(peer_review_root: Path) -> list[str]:
     return orch.list_peer_review_domains(peer_review_root)
 
 
+FM_ORDER = ("reassessment_id", "cause", "run_status", "change_refs", "touch_order")
+LIST_FM_KEYS = ("change_refs", "touch_order")
+RUN_STATUSES = ("draft", "awaiting_plan_approval", "approved", "executing", "complete", "abandoned")
+RUN_ACTIVE = ("approved", "executing", "complete")
+
+
+def _fm_scalar(value: Any) -> str:
+    text = str(value)
+    if text == "" or text != text.strip() or re.search(r"[:#'\"\[\]{},&*!|>%@`]", text):
+        return json.dumps(text)
+    return text
+
+
+def render_front_matter(fields: dict[str, Any]) -> str:
+    """Write reassessment.md front matter in a fixed key order (read back by read_front_matter)."""
+    keys = [k for k in FM_ORDER if k in fields] + [k for k in fields if k not in FM_ORDER]
+    lines = ["---"]
+    for key in keys:
+        value = fields[key]
+        if key in LIST_FM_KEYS:
+            if not value:
+                lines.append(f"{key}: []")
+            else:
+                lines.append(f"{key}:")
+                lines.extend(f"  - {_fm_scalar(item)}" for item in value)
+        elif value is None:
+            lines.append(f"{key}: null")
+        else:
+            lines.append(f"{key}: {_fm_scalar(value)}")
+    lines.append("---")
+    return "\n".join(lines)
+
+
+def update_reassessment(path: Path, **updates: Any) -> dict[str, Any]:
+    """Merge fields into reassessment.md front matter; the Markdown body is kept as written."""
+    orch = _import_orchestrator()
+    if updates.get("run_status") not in (None, *RUN_STATUSES):
+        raise ValueError(f"run_status must be one of {', '.join(RUN_STATUSES)}")
+    fields = orch.read_front_matter(path)
+    fields.update(updates)
+    for key in LIST_FM_KEYS:
+        fields[key] = orch.as_list(fields.get(key))
+    lines = path.read_text(encoding="utf-8").split("\n")
+    end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+    if end is None:
+        raise ValueError(f"reassessment.md has no front matter: {path}")
+    body = "\n".join(lines[end + 1 :])
+    path.write_text(render_front_matter(fields) + "\n" + body, encoding="utf-8")
+    return fields
+
+
 def scaffold_program(
     peer_review_root: Path,
     *,
     cause: str,
+    change_ids: list[str],
     timestamp: str | None = None,
     change_summary: str | None = None,
 ) -> dict[str, Any]:
+    """Open one reassessment run that covers accepted program changes (revision_rounds.md)."""
+    orch = _import_orchestrator()
+    if not change_ids:
+        raise ValueError("pass at least one --change-id: a run covers explicit program changes")
+    changes = scan_change_files(changes_dir(peer_review_root))
+    refs: list[str] = []
+    for cid in change_ids:
+        if cid not in changes:
+            raise ValueError(f"unknown program change {cid} under program_changes/changes/")
+        disposition = str(orch.read_front_matter(changes[cid]["path"]).get("disposition") or "")
+        if disposition != "accepted":
+            raise ValueError(
+                f"{cid} is {disposition or 'without disposition'}; only accepted changes can be reassessed"
+            )
+        if cid not in refs:
+            refs.append(cid)
+
     ts = timestamp or utc_now_ts()
     name = program_dir_name(ts, cause)
     prog = peer_review_root / PROGRAM_CHANGES_DIRNAME / name
+    if (prog / "reassessment.md").exists():
+        raise FileExistsError(f"reassessment already exists: {prog}")
     prog.mkdir(parents=True, exist_ok=True)
     (prog / "impact_by_domain").mkdir(exist_ok=True)
 
-    pack = prog / "change_pack.md"
-    if not pack.is_file():
-        tmpl = TEMPLATES_DIR / "change_pack.md"
-        body = tmpl.read_text(encoding="utf-8") if tmpl.is_file() else "# Change pack\n"
-        if change_summary:
-            body = body.replace("{{SUMMARY}}", change_summary)
-        else:
-            body = body.replace("{{SUMMARY}}", "(fill in)")
-        body = body.replace("{{CAUSE}}", cause)
-        body = body.replace("{{TIMESTAMP}}", ts)
-        pack.write_text(body, encoding="utf-8")
+    fields = {
+        "reassessment_id": name,
+        "cause": cause,
+        "run_status": "draft",
+        "change_refs": refs,
+        "touch_order": [],
+    }
+    body = (
+        f"\n# Reassessment `{name}`\n\n"
+        "Covers the change ids in front matter. Contract: `process/standards/revision_rounds.md`.\n"
+    )
+    (prog / "reassessment.md").write_text(render_front_matter(fields) + "\n" + body, encoding="utf-8")
 
-    for fname, tmpl_name in (
-        ("impact_assessment.md", "impact_assessment.md"),
-        ("execution_log.md", "execution_log.md"),
-    ):
-        dest = prog / fname
-        if not dest.is_file():
-            tmpl = TEMPLATES_DIR / tmpl_name
-            text = tmpl.read_text(encoding="utf-8") if tmpl.is_file() else f"# {fname}\n"
-            text = text.replace("{{CAUSE}}", cause).replace("{{TIMESTAMP}}", ts)
-            dest.write_text(text, encoding="utf-8")
+    index_rows = []
+    for cid in refs:
+        meta = orch.read_front_matter(changes[cid]["path"])
+        index_rows.append(
+            f"| {cid} | {meta.get('title') or cid} | {changes[cid]['path'].resolve()} |"
+        )
+    pack_tmpl = TEMPLATES_DIR / "change_pack.md"
+    pack_body = pack_tmpl.read_text(encoding="utf-8") if pack_tmpl.is_file() else "# Change pack\n"
+    table = "\n".join(["| change_id | micro-reminder | statement |", "| --- | --- | --- |", *index_rows])
+    pack_body = (
+        pack_body.replace("{{SUMMARY}}", change_summary or "(fill in)")
+        .replace("{{CAUSE}}", cause)
+        .replace("{{TIMESTAMP}}", ts)
+        .replace("{{CHANGE_TABLE}}", table)
+    )
+    (prog / "change_pack.md").write_text(pack_body, encoding="utf-8")
+
+    rollup_tmpl = TEMPLATES_DIR / "impact_assessment.md"
+    rollup_body = rollup_tmpl.read_text(encoding="utf-8") if rollup_tmpl.is_file() else "# Impact assessment\n"
+    (prog / "impact_assessment.md").write_text(
+        rollup_body.replace("{{CAUSE}}", cause).replace("{{TIMESTAMP}}", ts), encoding="utf-8"
+    )
+    exec_tmpl = TEMPLATES_DIR / "execution_log.md"
+    exec_body = exec_tmpl.read_text(encoding="utf-8") if exec_tmpl.is_file() else "# Execution log\n"
+    (prog / "execution_log.md").write_text(
+        exec_body.replace("{{CAUSE}}", cause).replace("{{TIMESTAMP}}", ts), encoding="utf-8"
+    )
 
     domains = list_consumer_domains(peer_review_root)
     impact_tmpl = TEMPLATES_DIR / "impact_by_domain" / "_template.md"
     impact_body = (
         impact_tmpl.read_text(encoding="utf-8")
         if impact_tmpl.is_file()
-        else "# Impact — {{DOMAIN}}\n\nverdict: no-touch\nseverity: none\n"
+        else "# Impact — {{DOMAIN}}\n\nTODO_IMPACT\n\n{{IMPACT_ROWS}}\n"
     )
+    rows = "\n".join(f"| {cid} | TODO_IMPACT | TODO_IMPACT |" for cid in refs)
     for domain in domains:
         dest = prog / "impact_by_domain" / f"{domain}.md"
         if not dest.is_file():
             dest.write_text(
                 impact_body.replace("{{DOMAIN}}", domain)
                 .replace("{{CAUSE}}", cause)
-                .replace("{{TIMESTAMP}}", ts),
+                .replace("{{TIMESTAMP}}", ts)
+                .replace("{{IMPACT_ROWS}}", rows),
                 encoding="utf-8",
             )
 
     return {
         "program_dir": str(prog.resolve()),
+        "reassessment_id": name,
         "timestamp": ts,
         "cause": cause,
+        "change_refs": refs,
+        "run_status": "draft",
         "domains": domains,
-        "change_pack": str(pack.resolve()),
+        "change_pack": str((prog / "change_pack.md").resolve()),
     }
 
 
 def parse_impact_file(path: Path) -> dict[str, Any]:
+    """Read one domain's impact file: per-change effect rows and the domain verdict.
+
+    Effect rows are `| PC-… | touch|no-touch | reason |` (revision_rounds.md, "Impact and
+    execution"). The domain verdict is `touch` when any row is touch, else `no-touch`.
+    """
+    orch = _import_orchestrator()
     text = path.read_text(encoding="utf-8") if path.is_file() else ""
-    verdict_m = TOUCH_RE.search(text)
+    effects = orch.impact_effects(path)
     sev_m = SEVERITY_RE.search(text)
-    verdict = (verdict_m.group(1).lower() if verdict_m else "no-touch").replace(
-        "no-touch", "no-touch"
-    )
-    if verdict not in ("touch", "no-touch"):
-        verdict = "no-touch"
     return {
         "path": str(path),
-        "verdict": verdict,
+        "verdict": "touch" if "touch" in effects.values() else "no-touch",
+        "effects": effects,
         "severity": (sev_m.group(1).lower() if sev_m else "none"),
-        "filled": bool(text.strip()) and "verdict:" in text.lower(),
+        "filled": bool(effects),
     }
 
 
@@ -414,205 +510,253 @@ def ensure_execution_rows(
     return rows
 
 
+def _promote_domain(path: Path) -> None:
+    """Set every change row of a domain to touch (upstream coherence; revision_rounds.md)."""
+    body = path.read_text(encoding="utf-8")
+    body = re.sub(
+        r"(?im)^(\s*\|\s*PC-\d{8}-\d{3}\s*\|\s*)no-touch(\s*\|)", r"\1touch\2", body
+    )
+    if "promoted_for_upstream_coherence: true" not in body:
+        body = body.rstrip() + "\n\npromoted_for_upstream_coherence: true\n"
+    path.write_text(body, encoding="utf-8")
+
+
 def rollup_impact(
     peer_review_root: Path,
     program_dir: Path,
 ) -> dict[str, Any]:
-    orch = _import_orchestrator()
-    domains = list_consumer_domains(peer_review_root)
-    by_domain: dict[str, dict[str, Any]] = {}
-    for d in domains:
-        path = program_dir / "impact_by_domain" / f"{d}.md"
-        by_domain[d] = parse_impact_file(path)
+    """Aggregate the per-change impact rows, promote for upstream coherence, write the rollup.
 
-    # Promote no-touch → touch when an earlier catalog domain is touch
-    promoted: list[str] = []
+    Allowed only while the plan is still a draft or awaiting approval. After approval the
+    touch list is frozen (process/standards/question_pyramid.md).
+    """
+    orch = _import_orchestrator()
+    ref = program_dir / "reassessment.md"
+    if not ref.is_file():
+        raise ValueError(f"missing reassessment.md in {program_dir}")
+    fm = orch.read_front_matter(ref)
+    status = str(fm.get("run_status") or "")
+    if status not in ("draft", "awaiting_plan_approval"):
+        raise ValueError(
+            f"run_status is {status}: the touch list is frozen; open a new reassessment instead"
+        )
+    ids = orch.as_list(fm.get("change_refs"))
+    domains = list_consumer_domains(peer_review_root)
+    by_domain = {
+        d: parse_impact_file(program_dir / "impact_by_domain" / f"{d}.md") for d in domains
+    }
+    incomplete = {
+        d: [c for c in ids if c not in info["effects"]]
+        for d, info in by_domain.items()
+    }
+    incomplete = {d: missing for d, missing in incomplete.items() if missing}
+    if incomplete:
+        detail = "; ".join(f"{d} missing {', '.join(m)}" for d, m in incomplete.items())
+        raise ValueError(
+            "impact incomplete: each domain needs one touch|no-touch row per change id (" + detail + ")"
+        )
+
     ordered = sorted(domains, key=orch.catalog_index)
+    promoted: list[str] = []
     touch_seen = False
     for d in ordered:
         info = by_domain[d]
         if info["verdict"] == "touch":
             touch_seen = True
-        elif touch_seen and info["verdict"] == "no-touch":
-            # Coherence force: if any upstream touch, later domains must be re-checked;
-            # promote unless impact file explicitly says coherence_ok: true
-            text = Path(info["path"]).read_text(encoding="utf-8") if Path(info["path"]).is_file() else ""
-            if re.search(r"(?im)coherence_ok\s*:\s*true", text):
-                continue
-            info["verdict"] = "touch"
-            info["promoted"] = True
-            promoted.append(d)
-            # rewrite file marker
-            path = Path(info["path"])
-            if path.is_file():
-                body = path.read_text(encoding="utf-8")
-                body = re.sub(
-                    r"(?im)^(\s*(?:-\s*)?(?:\*\*)?verdict(?:\*\*)?\s*[:=]\s*)no-touch\b",
-                    r"\1touch",
-                    body,
-                    count=1,
-                )
-                if "promoted_for_upstream_coherence: true" not in body:
-                    body += "\n\npromoted_for_upstream_coherence: true\n"
-                path.write_text(body, encoding="utf-8")
+            continue
+        if not touch_seen:
+            continue
+        text = Path(info["path"]).read_text(encoding="utf-8")
+        if re.search(r"(?im)coherence_ok\s*:\s*true", text):
+            continue
+        _promote_domain(Path(info["path"]))
+        info["effects"] = {c: "touch" for c in info["effects"]}
+        info["verdict"] = "touch"
+        info["promoted"] = True
+        promoted.append(d)
 
     touch_list = [d for d in ordered if by_domain[d]["verdict"] == "touch"]
+    header = ["domain"] + ids + ["verdict", "severity", "promoted"]
     lines = [
         "# Impact assessment (rollup)",
         "",
         "Aggregated from `impact_by_domain/`. Order follows `process/standards/domains.md`.",
         "",
-        "| domain | verdict | severity | promoted |",
-        "| --- | --- | --- | --- |",
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join("---" for _ in header) + " |",
     ]
     for d in ordered:
         info = by_domain[d]
+        cells = [info["effects"].get(c, "") for c in ids]
         lines.append(
-            f"| {d} | {info['verdict']} | {info.get('severity', 'none')} | "
-            f"{'yes' if info.get('promoted') else ''} |"
+            "| "
+            + " | ".join(
+                [d, *cells, info["verdict"], info.get("severity", "none"), "yes" if info.get("promoted") else ""]
+            )
+            + " |"
         )
-    lines.extend(
-        [
-            "",
-            "## Touch order (execution)",
-            "",
-        ]
-    )
-    for d in touch_list:
-        lines.append(f"1. `{d}`")
+    lines.extend(["", "## Touch order (execution)", ""])
+    lines.extend(f"1. `{d}`" for d in touch_list)
     if not touch_list:
         lines.append("_None — no domains marked touch._")
     lines.append("")
     if promoted:
-        lines.append("## Promotions")
-        lines.append("")
-        lines.append(
-            "The following were promoted `no-touch` → `touch` because an upstream domain "
-            "in this program is `touch` and `coherence_ok: true` was not set:"
+        lines.extend(
+            [
+                "## Promotions",
+                "",
+                "Promoted `no-touch` → `touch` because an earlier domain in this run is touch and "
+                "`coherence_ok: true` was not set. Every change row of a promoted domain is touch.",
+                "",
+            ]
         )
-        for d in promoted:
-            lines.append(f"- `{d}`")
+        lines.extend(f"- `{d}`" for d in promoted)
         lines.append("")
-
     (program_dir / "impact_assessment.md").write_text("\n".join(lines), encoding="utf-8")
 
-    # Seed execution log for touch domains
-    name = program_dir.name
-    ts, _, cause = name.partition("_")
-    ensure_execution_rows(
-        program_dir,
-        touch_list,
-        cause=cause or "change",
-        timestamp=ts or utc_now_ts(),
-    )
+    if status == "draft":
+        update_reassessment(ref, run_status="awaiting_plan_approval")
 
     return {
         "domains": ordered,
         "by_domain": by_domain,
+        "change_refs": ids,
         "touch_order": touch_list,
         "promoted": promoted,
         "impact_assessment": str((program_dir / "impact_assessment.md").resolve()),
     }
 
 
-def impact_plan_approved(program_dir: Path) -> bool:
-    path = program_dir / "impact_assessment.md"
-    if not path.is_file():
-        return False
-    text = path.read_text(encoding="utf-8")
-    return bool(
-        re.search(r"(?im)^\s*impact_plan_approved\s*:\s*true\b", text)
-        or re.search(r"(?im)status\s*:\s*approved\b", text)
+def approve_impact(peer_review_root: Path, program_dir: Path) -> dict[str, Any]:
+    """Human approval of the plan: freeze touch_order and seed the execution log.
+
+    Process rule: after `approved`, do not add, drop, or reorder touch domains
+    (question_pyramid.md). This function is therefore the only writer of touch_order.
+    """
+    orch = _import_orchestrator()
+    ref = program_dir / "reassessment.md"
+    status = str(orch.read_front_matter(ref).get("run_status") or "")
+    if status in RUN_ACTIVE or status == "abandoned":
+        raise ValueError(f"run_status is {status}: the plan cannot be approved again")
+    rollup = rollup_impact(peer_review_root, program_dir)
+    touch_order = rollup["touch_order"]
+    update_reassessment(ref, run_status="approved", touch_order=touch_order)
+    name = program_dir.name
+    ts, _, cause = name.partition("_")
+    ensure_execution_rows(
+        program_dir, touch_order, cause=cause or "change", timestamp=ts or utc_now_ts()
     )
+    run_status = sync_run_status(program_dir)
+    return {
+        "program_dir": str(program_dir.resolve()),
+        "run_status": run_status,
+        "touch_order": touch_order,
+        "promoted": rollup["promoted"],
+    }
 
 
-def mark_impact_approved(program_dir: Path) -> None:
-    path = program_dir / "impact_assessment.md"
-    text = path.read_text(encoding="utf-8") if path.is_file() else "# Impact assessment\n"
-    if not re.search(r"(?im)^\s*impact_plan_approved\s*:", text):
-        text = text.rstrip() + "\n\nimpact_plan_approved: true\n"
+def sync_run_status(program_dir: Path) -> str:
+    """Derive approved / executing / complete from the execution log (revision_rounds.md)."""
+    orch = _import_orchestrator()
+    ref = program_dir / "reassessment.md"
+    fm = orch.read_front_matter(ref)
+    status = str(fm.get("run_status") or "")
+    if status not in ("approved", "executing", "complete"):
+        return status
+    order = orch.as_list(fm.get("touch_order"))
+    statuses = read_execution_statuses(program_dir)
+    values = [statuses.get(d, "pending") for d in order]
+    if all(v == "accepted" for v in values):
+        new_status = "complete"
+    elif any(v != "pending" for v in values):
+        new_status = "executing"
     else:
-        text = re.sub(
-            r"(?im)^\s*impact_plan_approved\s*:\s*\w+",
-            "impact_plan_approved: true",
-            text,
-        )
-    path.write_text(text, encoding="utf-8")
+        new_status = "approved"
+    if new_status != status:
+        update_reassessment(ref, run_status=new_status)
+    return new_status
+
+
+def touch_change_ids(program_dir: Path, domain: str) -> list[str]:
+    orch = _import_orchestrator()
+    effects = orch.impact_effects(program_dir / "impact_by_domain" / f"{domain}.md")
+    return [c for c, e in sorted(effects.items()) if e == "touch"]
 
 
 def next_action(peer_review_root: Path, program_dir: Path) -> dict[str, Any]:
     orch = _import_orchestrator()
-    domains = list_consumer_domains(peer_review_root)
-    impact_dir = program_dir / "impact_by_domain"
-    missing_impact = [
-        d
-        for d in domains
-        if not (impact_dir / f"{d}.md").is_file()
-        or not parse_impact_file(impact_dir / f"{d}.md")["filled"]
-    ]
-    # Consider "filled" if file exists with verdict line — scaffold creates stubs with verdict
-    stub_unreviewed = []
-    for d in domains:
-        p = impact_dir / f"{d}.md"
-        if not p.is_file():
-            stub_unreviewed.append(d)
-            continue
-        text = p.read_text(encoding="utf-8")
-        if "PENDING_IMPACT_SUBAGENT" in text or "TODO_IMPACT" in text:
-            stub_unreviewed.append(d)
+    ref = program_dir / "reassessment.md"
+    status = str(orch.read_front_matter(ref).get("run_status") or "")
+    round_id = program_dir.name.partition("_")[0]
 
-    if stub_unreviewed:
-        return {
-            "next_action": "dispatch_impact_subagents",
-            "domains": stub_unreviewed,
-            "detail": "Run one impact subagent per domain; write impact_by_domain/{domain}.md",
-        }
+    if status == "abandoned":
+        return {"next_action": "abandoned", "detail": "This run was abandoned; open a new reassessment."}
 
-    rollup_path = program_dir / "impact_assessment.md"
-    if not rollup_path.is_file() or "Touch order" not in rollup_path.read_text(encoding="utf-8"):
-        return {
-            "next_action": "rollup_impact",
-            "detail": "Run rollup-impact after all impact_by_domain files are filled",
-        }
-
-    if not impact_plan_approved(program_dir):
+    if status in ("draft", "awaiting_plan_approval"):
+        domains = list_consumer_domains(peer_review_root)
+        impact_dir = program_dir / "impact_by_domain"
+        stubs = []
+        for d in domains:
+            path = impact_dir / f"{d}.md"
+            if not path.is_file() or "TODO_IMPACT" in path.read_text(encoding="utf-8"):
+                stubs.append(d)
+        if status == "draft" and stubs:
+            return {
+                "next_action": "dispatch_impact_subagents",
+                "domains": stubs,
+                "detail": "Run one impact subagent per domain; fill one effect row per change id",
+            }
+        if status == "draft":
+            return {
+                "next_action": "rollup_impact",
+                "detail": "Run rollup-impact (sets run_status to awaiting_plan_approval)",
+            }
         return {
             "next_action": "await_human_impact_approval",
-            "detail": "Ask steward to approve; then approve-impact or set impact_plan_approved: true",
+            "detail": "Steward reviews impact_assessment.md; then approve-impact freezes the touch order",
         }
 
-    statuses = read_execution_statuses(program_dir)
-    rollup = rollup_impact(peer_review_root, program_dir)
-    touch_order = rollup["touch_order"]
-    review_round_id = program_dir.name.partition("_")[0]
+    if status == "complete":
+        return {"next_action": "done", "detail": "Run complete; coherence note in execution_log.md"}
 
-    for d in touch_order:
+    order = orch.as_list(orch.read_front_matter(ref).get("touch_order"))
+    statuses = read_execution_statuses(program_dir)
+    for d in order:
         st = statuses.get(d, "pending")
-        if st in ("pending", "in_progress"):
+        common = {
+            "domain": d,
+            "status": st,
+            "round_id": round_id,
+            "change_ids": touch_change_ids(program_dir, d),
+            "domain_root": str((peer_review_root / d).resolve()),
+        }
+        if st == "pending":
             return {
                 "next_action": "run_domain_revision",
-                "domain": d,
-                "status": st,
-                "round_id": review_round_id,
                 "detail": (
-                    f"init-round revision for {d} with --round-id {review_round_id} "
-                    "(same id for every touch domain; refresh upstream_pins), "
+                    f"Mark {d} in_progress, then init-round --kind revision --round-id {round_id} "
+                    "--reassessment-ref <run>/reassessment.md --change-id <each change_ids entry>, "
                     "then peer-review-orchestrator phases 0–5"
                 ),
-                "domain_root": str((peer_review_root / d).resolve()),
+                **common,
+            }
+        if st == "in_progress":
+            return {
+                "next_action": "resume_domain_round",
+                "detail": f"Round of {d} is open; resume peer-review-orchestrator on it (do not init again)",
+                **common,
             }
         if st == "awaiting_human":
             return {
                 "next_action": "await_human_domain_approval",
-                "domain": d,
-                "detail": f"Steward must accept round for {d}; then accept-domain",
+                "detail": f"Steward accepts the round of {d}; then accept-domain",
+                **common,
             }
 
-    return {
-        "next_action": "done",
-        "detail": "All touch domains accepted; write coherence note in execution_log if missing",
-        "touch_order": touch_order,
-    }
+    run_status = sync_run_status(program_dir)
+    if run_status == "complete":
+        return {"next_action": "done", "detail": "All touch domains accepted; coherence note in execution_log.md"}
+    return {"next_action": "check_run_status", "detail": f"run_status is {run_status}"}
 
 
 def set_domain_status(
@@ -623,10 +767,19 @@ def set_domain_status(
     round_id: str | None = None,
     notes: str = "",
 ) -> dict[str, Any]:
+    orch = _import_orchestrator()
+    fm = orch.read_front_matter(program_dir / "reassessment.md")
+    run_status = str(fm.get("run_status") or "")
+    order = orch.as_list(fm.get("touch_order"))
+    if run_status not in ("approved", "executing"):
+        raise ValueError(f"run_status is {run_status}; execution starts only after approve-impact")
+    if domain not in order:
+        raise ValueError(f"{domain} is not in the frozen touch_order of this run")
+    if status == "skipped":
+        raise ValueError(f"{domain} is a touch domain; a touch domain is never skipped")
+
     name = program_dir.name
     ts, _, cause = name.partition("_")
-    statuses = read_execution_statuses(program_dir)
-    # rebuild rows
     path = program_dir / "execution_log.md"
     prior: dict[str, dict[str, str]] = {}
     trailing: list[str] = []
@@ -650,12 +803,7 @@ def set_domain_status(
             if seen_row and line.strip() and not line.strip().startswith("|"):
                 trailing.append(line)
     if domain not in prior:
-        prior[domain] = {
-            "domain": domain,
-            "status": status,
-            "round_id": round_id or "",
-            "notes": notes,
-        }
+        prior[domain] = {"domain": domain, "status": status, "round_id": round_id or "", "notes": notes}
     else:
         prior[domain]["status"] = status
         if round_id is not None:
@@ -663,16 +811,15 @@ def set_domain_status(
         if notes:
             prior[domain]["notes"] = notes
 
-    orch = _import_orchestrator()
     ordered = sorted(prior.keys(), key=orch.catalog_index)
-    rows = [prior[d] for d in ordered]
     write_execution_log(
         program_dir,
-        rows,
+        [prior[d] for d in ordered],
         cause=cause or "change",
         timestamp=ts or utc_now_ts(),
         extra_body="\n".join(trailing).strip() or None,
     )
+    sync_run_status(program_dir)
     return prior[domain]
 
 
@@ -684,6 +831,11 @@ def accept_domain(
     round_id: str | None = None,
 ) -> dict[str, Any]:
     orch = _import_orchestrator()
+    current_status = read_execution_statuses(program_dir).get(domain, "pending")
+    if current_status != "awaiting_human":
+        raise ValueError(
+            f"{domain} must be awaiting_human before accept (current: {current_status})"
+        )
     domain_root = peer_review_root / domain
     rid = round_id
     if not rid:
@@ -699,17 +851,110 @@ def accept_domain(
         round_id=rid,
         notes="human accepted",
     )
-    return {"domain": domain, "round_id": rid, "execution": row}
+    return {"domain": domain, "round_id": rid, "execution": row, "run_status": sync_run_status(program_dir)}
+
+
+def _runs(peer_review_root: Path) -> list[dict[str, Any]]:
+    orch = _import_orchestrator()
+    base = peer_review_root / PROGRAM_CHANGES_DIRNAME
+    runs: list[dict[str, Any]] = []
+    if not base.is_dir():
+        return runs
+    for d in sorted(p for p in base.iterdir() if p.is_dir()):
+        ref = d / "reassessment.md"
+        if ref.is_file():
+            fm = orch.read_front_matter(ref)
+            runs.append(
+                {
+                    "dir": d,
+                    "name": d.name,
+                    "run_status": str(fm.get("run_status") or ""),
+                    "change_refs": orch.as_list(fm.get("change_refs")),
+                }
+            )
+    return runs
+
+
+def _execution_state(prog: Path, cid: str) -> tuple[str, list[str]]:
+    """Application state of one change inside its governing run (rows 4–8 of the table)."""
+    orch = _import_orchestrator()
+    impact_dir = prog / "impact_by_domain"
+    effects = {
+        f.stem: orch.impact_effects(f)
+        for f in sorted(impact_dir.glob("*.md"))
+    } if impact_dir.is_dir() else {}
+    if not effects or any(cid not in eff for eff in effects.values()):
+        return "assessing", []
+    required = [d for d, eff in sorted(effects.items()) if eff.get(cid) == "touch"]
+    if not required:
+        return "applied", []
+    statuses = read_execution_statuses(prog)
+    if any(d not in statuses for d in required):
+        return "assessing", required
+    values = [statuses[d] for d in required]
+    if all(v == "accepted" for v in values):
+        return "applied", required
+    if any(v == "accepted" for v in values):
+        return "partially_applied", required
+    if any(v in ("in_progress", "awaiting_human") for v in values):
+        return "in_progress", required
+    return "planned", required
+
+
+def application_status(peer_review_root: Path) -> list[dict[str, Any]]:
+    """Derive each change's application status. Nothing is stored in the change file."""
+    orch = _import_orchestrator()
+    runs = _runs(peer_review_root)
+    rows: list[dict[str, Any]] = []
+    changes = scan_change_files(changes_dir(peer_review_root))
+    for cid, info in sorted(changes.items()):
+        meta = orch.read_front_matter(info["path"])
+        disposition = str(meta.get("disposition") or "")
+        governing = [r for r in runs if cid in r["change_refs"] and r["run_status"] in RUN_ACTIVE]
+        gov = governing[-1] if governing else None
+        recheck = [
+            r
+            for r in runs
+            if cid in r["change_refs"]
+            and r["run_status"] in ("draft", "awaiting_plan_approval")
+            and (gov is None or r["name"] > gov["name"])
+        ]
+        open_recheck = recheck[-1]["name"] if recheck else None
+        required: list[str] = []
+        if disposition in ("proposed", "rejected", "superseded"):
+            state = "n/a"
+        elif gov is None:
+            state = "assessing" if recheck else "uncovered"
+        else:
+            state, required = _execution_state(gov["dir"], cid)
+        rows.append(
+            {
+                "change_id": cid,
+                "meaning": info["meaning"],
+                "title": meta.get("title"),
+                "disposition": disposition,
+                "application": state,
+                "governing_run": gov["name"] if gov else None,
+                "open_recheck": open_recheck,
+                "required_domains": required,
+            }
+        )
+    return rows
 
 
 def cmd_scaffold(args: argparse.Namespace) -> int:
     peer = Path(args.peer_review_root)
-    result = scaffold_program(
-        peer,
-        cause=args.cause,
-        timestamp=args.timestamp,
-        change_summary=args.summary,
-    )
+    try:
+        result = scaffold_program(
+            peer,
+            cause=args.cause,
+            change_ids=args.change_ids or [],
+            timestamp=args.timestamp,
+            change_summary=args.summary,
+        )
+    except (ValueError, FileExistsError) as exc:
+        print(json.dumps({"error": str(exc)}, indent=2), file=sys.stderr)
+        return 1
     print(json.dumps(result, indent=2))
     return 0
 
@@ -726,7 +971,12 @@ def cmd_rollup(args: argparse.Namespace) -> int:
     if not prog:
         print(json.dumps({"error": "program_dir not found"}), file=sys.stderr)
         return 1
-    print(json.dumps(rollup_impact(peer, prog), indent=2, default=str))
+    try:
+        result = rollup_impact(peer, prog)
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}, indent=2), file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, default=str))
     return 0
 
 
@@ -744,8 +994,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     payload = {
         "peer_review_root": str(peer.resolve()),
         "program_dir": str(prog.resolve()),
+        "run_status": str(_import_orchestrator().read_front_matter(prog / "reassessment.md").get("run_status") or ""),
         "execution": read_execution_statuses(prog),
-        "impact_plan_approved": impact_plan_approved(prog),
         **action,
     }
     print(json.dumps(payload, indent=2, default=str))
@@ -775,6 +1025,34 @@ def cmd_next_action(args: argparse.Namespace) -> int:
     return cmd_status(args)
 
 
+def cmd_changes_status(args: argparse.Namespace) -> int:
+    peer = Path(args.peer_review_root)
+    print(json.dumps({"changes": application_status(peer)}, indent=2))
+    return 0
+
+
+def cmd_abandon(args: argparse.Namespace) -> int:
+    peer = Path(args.peer_review_root)
+    prog = resolve_program_dir(
+        peer,
+        program_dir=Path(args.program_dir) if args.program_dir else None,
+        cause=args.cause,
+    )
+    if not prog:
+        print(json.dumps({"error": "program_dir not found"}), file=sys.stderr)
+        return 1
+    ref = prog / "reassessment.md"
+    status = str(_import_orchestrator().read_front_matter(ref).get("run_status") or "")
+    if status in ("executing", "complete"):
+        print(json.dumps({"error": f"run_status is {status}; a running or finished run is not abandoned"}), file=sys.stderr)
+        return 1
+    update_reassessment(ref, run_status="abandoned")
+    with ref.open("a", encoding="utf-8") as f:
+        f.write(f"\nAbandoned: {args.reason.strip()}\n")
+    print(json.dumps({"program_dir": str(prog.resolve()), "run_status": "abandoned"}, indent=2))
+    return 0
+
+
 def cmd_approve_impact(args: argparse.Namespace) -> int:
     peer = Path(args.peer_review_root)
     prog = resolve_program_dir(
@@ -785,9 +1063,12 @@ def cmd_approve_impact(args: argparse.Namespace) -> int:
     if not prog:
         print(json.dumps({"error": "program_dir not found"}), file=sys.stderr)
         return 1
-    rollup_impact(peer, prog)
-    mark_impact_approved(prog)
-    print(json.dumps({"program_dir": str(prog), "impact_plan_approved": True}, indent=2))
+    try:
+        result = approve_impact(peer, prog)
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}, indent=2), file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, default=str))
     return 0
 
 
@@ -801,13 +1082,17 @@ def cmd_set_domain_status(args: argparse.Namespace) -> int:
     if not prog:
         print(json.dumps({"error": "program_dir not found"}), file=sys.stderr)
         return 1
-    row = set_domain_status(
-        prog,
-        args.domain,
-        args.status,
-        round_id=args.round_id,
-        notes=args.notes or "",
-    )
+    try:
+        row = set_domain_status(
+            prog,
+            args.domain,
+            args.status,
+            round_id=args.round_id,
+            notes=args.notes or "",
+        )
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}, indent=2), file=sys.stderr)
+        return 1
     print(json.dumps(row, indent=2))
     return 0
 
@@ -868,16 +1153,32 @@ def build_parser() -> argparse.ArgumentParser:
         choices=DISPOSITIONS,
     )
 
-    p_sc = sub.add_parser("scaffold", help="Create program_changes/{ts}_{cause}/")
+    p_sc = sub.add_parser(
+        "scaffold",
+        help="Open program_changes/{ts}_{cause}/reassessment.md covering accepted change ids",
+    )
+    p_sc.add_argument(
+        "--change-id",
+        dest="change_ids",
+        action="append",
+        required=True,
+        help="PC-YYYYMMDD-NNN covered by this run (repeat for several; must be accepted)",
+    )
     p_sc.add_argument("--timestamp", default=None)
     p_sc.add_argument("--summary", default=None)
     p_sc.set_defaults(_require_cause=True)
 
     sub.add_parser("list-domains", help="List d0X folders under peer-review-root")
-    sub.add_parser("status", help="Program status + next_action")
+    sub.add_parser("status", help="Run status + next_action")
     sub.add_parser("next-action", help="Alias for status")
-    sub.add_parser("rollup-impact", help="Aggregate impact_by_domain → impact_assessment")
-    sub.add_parser("approve-impact", help="Mark impact plan approved after human gate")
+    sub.add_parser("rollup-impact", help="Aggregate impact rows into impact_assessment.md")
+    sub.add_parser("approve-impact", help="Human approval: freezes touch_order, run_status approved")
+    sub.add_parser(
+        "changes-status",
+        help="Derived application status of every program change (no stored status)",
+    )
+    p_ab = sub.add_parser("abandon", help="Abandon a run that is not executing or complete")
+    p_ab.add_argument("--reason", required=True)
 
     p_set = sub.add_parser("set-domain-status", help="Update execution_log row")
     p_set.add_argument("--domain", required=True)
@@ -910,6 +1211,8 @@ def main(argv: list[str] | None = None) -> int:
         "next-action": cmd_next_action,
         "rollup-impact": cmd_rollup,
         "approve-impact": cmd_approve_impact,
+        "changes-status": cmd_changes_status,
+        "abandon": cmd_abandon,
         "set-domain-status": cmd_set_domain_status,
         "accept-domain": cmd_accept_domain,
     }

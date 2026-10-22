@@ -3,6 +3,4 @@
 **Cause:** {{CAUSE}}  
 **Program timestamp:** {{TIMESTAMP}}
 
-Fill via `delta_orchestrator.py rollup-impact` after per-domain impact files exist.
-
-impact_plan_approved: false
+Written by `rollup-impact` once every impact file has a row per change id. Approval is recorded in `reassessment.md` (`run_status: approved`), not here.
