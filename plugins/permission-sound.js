@@ -10,7 +10,7 @@ const CONFIG_PATH = join(homedir(), ".config", "opencode", "permission-sound.jso
 
 const DEFAULTS = {
   enabled: true,
-  soundFile: "C:\\Windows\\Media\\Windows Notify System Generic.wav",
+  soundFile: "C:\\Windows\\Media\\Alarm01.wav",
   fallbackSystemSound: "Exclamation",
   events: ["permission.asked"],
 }
