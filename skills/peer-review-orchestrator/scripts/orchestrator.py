@@ -7,10 +7,13 @@ Examples:
   python orchestrator.py init-round --domain-root path/to/d06_… --kind initial
   python orchestrator.py --review-root path/to/d06_…/20260601T100000Z
   python orchestrator.py --domain-root path/to/d06_…
-  python orchestrator.py phase1-gate --review-root ... --slot llm1_composer
+  python orchestrator.py phase1-gate --review-root ...
+  python orchestrator.py init-round --domain-root path/to/d03_… --kind revision \
+      --reassessment-ref path/to/program_changes/<ts>_<cause>/reassessment.md --change-id PC-20261015-001
   python orchestrator.py resolve-prompt --review-root ... --phase 2
   python orchestrator.py resolve-shortlist --review-root ... --phase 2
   python orchestrator.py list-participants --review-root ...
+  python orchestrator.py guard --proposal-folder path/to/phase2_initial_proposals/llm1_x
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ import argparse
 import json
 import re
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -1409,17 +1413,24 @@ def write_round_md(
     kind: str,
     round_id: str,
     baseline_round_id: str | None,
-    change_pack_ref: str | None,
+    reassessment_ref: str | None,
+    change_ids: list[str] | None,
     summary: str,
     upstream_pins: dict[str, str],
 ) -> Path:
     pins_yaml = "\n".join(f"  {k}: {v}" for k, v in upstream_pins.items()) or "  {}"
+    ids_block = (
+        "change_ids: null"
+        if not change_ids
+        else "change_ids:\n" + "\n".join(f"  - {c}" for c in change_ids)
+    )
     body = (
         "---\n"
         f"kind: {kind}\n"
         f"round_id: {round_id}\n"
         f"baseline_round_id: {baseline_round_id or 'null'}\n"
-        f"change_pack_ref: {change_pack_ref or 'null'}\n"
+        f"reassessment_ref: {reassessment_ref or 'null'}\n"
+        f"{ids_block}\n"
         f"summary: |\n  {summary}\n"
         f"upstream_pins:\n{pins_yaml}\n"
         "---\n\n"
@@ -1464,20 +1475,21 @@ def init_round(
     kind: str = "initial",
     peer_review_root: Path | None = None,
     baseline_round_id: str | None = None,
-    change_pack: Path | None = None,
+    reassessment_ref: Path | None = None,
+    change_ids: list[str] | None = None,
     summary: str | None = None,
     round_id: str | None = None,
     status: str = "in_progress",
 ) -> dict[str, Any]:
     """Create a round folder under domain_root.
 
-    Pass the review's shared round id via round_id. Without it, a new timestamp is
-    generated, which is only correct for the first domain of a review.
+    Pass the review's shared round id via round_id. A revision that belongs to a
+    delta reassessment passes reassessment_ref (its reassessment.md) and one change id
+    per change this domain applies (impact rows marked touch). The round id must then be
+    the reassessment timestamp (process/standards/revision_rounds.md).
     """
     peer_review_root = peer_review_root or domain_root.parent
-    domain_code = infer_domain_code(domain_root)
-    if not domain_code:
-        domain_code = domain_root.name
+    domain_code = infer_domain_code(domain_root) or domain_root.name
     rid = round_id or utc_now_round_id()
     conflicts = open_rounds_with_other_id(peer_review_root, domain_root, rid)
     if conflicts:
@@ -1486,6 +1498,14 @@ def init_round(
             f"Open round(s) with a different round id: {detail}. "
             f"Use round id {rid} only for the same review; close or accept the other review first."
         )
+    ids = [c.strip() for c in (change_ids or []) if c and c.strip()]
+    ref_path: str | None = None
+    if reassessment_ref is not None:
+        check_reassessment_round(reassessment_ref, domain_code, rid, kind, ids)
+        ref_path = str(reassessment_ref.resolve())
+    elif ids:
+        raise ValueError("change ids require --reassessment-ref")
+
     round_dir = domain_root / rid
     if round_dir.exists():
         raise FileExistsError(f"Round already exists: {round_dir}")
@@ -1514,13 +1534,13 @@ def init_round(
         if kind == "initial"
         else f"Revision round for {domain_code}"
     )
-    change_ref = str(change_pack.resolve()) if change_pack else None
     write_round_md(
         round_dir,
         kind=kind,
         round_id=rid,
         baseline_round_id=baseline_round_id,
-        change_pack_ref=change_ref,
+        reassessment_ref=ref_path,
+        change_ids=ids or None,
         summary=summary_text,
         upstream_pins=pins,
     )
@@ -1533,11 +1553,49 @@ def init_round(
         "review_root": str(round_dir.resolve()),
         "kind": kind,
         "baseline_round_id": baseline_round_id,
-        "change_pack_ref": change_ref,
+        "reassessment_ref": ref_path,
+        "change_ids": ids,
         "upstream_pins": pins,
         "upstream_artifact_paths": upstream_artifact_paths(peer_review_root, pins),
         "current_status": status,
     }
+
+
+def check_reassessment_round(
+    reassessment_ref: Path,
+    domain_code: str,
+    rid: str,
+    kind: str,
+    ids: list[str],
+) -> None:
+    """Refuse a revision round that the frozen reassessment plan does not allow."""
+    if kind != "revision":
+        raise ValueError("a round tied to a reassessment must use --kind revision")
+    if not reassessment_ref.is_file():
+        raise ValueError(f"reassessment.md not found: {reassessment_ref}")
+    info = reassessment_info(reassessment_ref)
+    prefix = reassessment_ref.parent.name.partition("_")[0]
+    if rid != prefix:
+        raise ValueError(
+            f"round id {rid} must equal the reassessment timestamp {prefix} (one id per review)"
+        )
+    if info["run_status"] not in ("approved", "executing"):
+        raise ValueError(
+            f"reassessment run_status is {info['run_status'] or 'missing'}; "
+            "approve the plan before opening revision rounds"
+        )
+    short = short_domain_id(domain_code)
+    if short not in _short_ids(info["touch_order"]):
+        raise ValueError(f"{domain_code} is not in the frozen touch_order of this reassessment")
+    if not ids:
+        raise ValueError("pass one --change-id per change this domain applies")
+    unknown = [c for c in ids if c not in info["change_refs"]]
+    if unknown:
+        raise ValueError("change ids not listed in change_refs: " + ", ".join(unknown))
+    effects = impact_effects(reassessment_ref.parent / "impact_by_domain" / f"{domain_code}.md")
+    not_touch = [c for c in ids if effects.get(c) != "touch"]
+    if not_touch:
+        raise ValueError(f"change ids not marked touch for {domain_code}: " + ", ".join(not_touch))
 
 
 def domain_standards_root(llms_root: Path, domain_code: str) -> Path:
@@ -1627,88 +1685,342 @@ def parse_participants(review_root: Path) -> list[Participant]:
     return participants
 
 
-def question_file_complete(path: Path) -> bool:
-    name = path.name.lower()
-    if name == "q00_no_valid_questions.md":
-        return True
-    if not name.startswith("q") or not name.endswith(".md"):
-        return True  # ignore non-question files
-
-    text = _read_text(path)
-
-    status_match = re.search(r"\*\*Status:\*\*\s*(.+)", text, re.I)
-    if status_match:
-        status = status_match.group(1).lower()
-        if any(k in status for k in ("answered", "closed", "deferred", "no valid")):
-            return True
-
-    # ## User answer section with content.
-    # Avoid \s* after the heading title (it eats blank lines under DOTALL-ish
-    # backtracking) and avoid \n+ before the capture (it can swallow the newline
-    # before the next ## heading). Match the next H2 with a lookahead.
-    # Next H2 only: ## not followed by # (so ### subsections stay inside the answer).
-    answer_match = re.search(
-        r"##[ \t]*User answer[ \t]*\r?\n(.*?)(?=\r?\n##(?!#)|\Z)",
-        text,
-        re.I | re.S,
-    )
-    if answer_match:
-        body = answer_match.group(1).strip()
-        body = re.sub(r"^>\s*", "", body, flags=re.M).strip()
-        # Strip markdown emphasis / italics wrappers around placeholders.
-        normalized = re.sub(r"^[\*_`~\s]+|[\*_`~\s]+$", "", body).strip().lower()
-        if body and normalized not in (
-            "",
-            "tbd",
-            "pending",
-            "n/a",
-            "todo",
-            "none",
-            "(pending)",
-            "[pending]",
-        ):
-            return True
-
-    return False
+def _unquote(value: str) -> Any:
+    v = value.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+        v = v[1:-1]
+    return None if v in ("", "null", "~") else v
 
 
-def phase1_slot_status(review_root: Path, folder_suffix: str) -> dict[str, Any]:
-    folder = review_root / "phase1_questions" / folder_suffix
-    if not folder.is_dir():
-        return {
-            "slot": folder_suffix,
-            "state": "not_started",
-            "pending_files": [],
-            "question_files": [],
-        }
+def read_front_matter(path: Path) -> dict[str, Any]:
+    """Parse the leading ``---`` block of a Markdown file without a YAML dependency.
 
-    questions = sorted(folder.glob("q*.md"))
-    if not questions:
-        return {
-            "slot": folder_suffix,
-            "state": "in_progress",
-            "pending_files": [],
-            "question_files": [],
-            "note": "folder exists but no q*.md yet",
-        }
+    Supports scalars, ``key: |`` block text, ``- item`` lists, and one level of
+    nested ``key: value`` pairs (for example ``upstream_pins``).
+    """
+    if not path.is_file():
+        return {}
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}
+    end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+    if end is None:
+        return {}
+    data: dict[str, Any] = {}
+    key: str | None = None
+    for raw in lines[1:end]:
+        if not raw.strip():
+            continue
+        if not raw[0].isspace():
+            key = None
+            m = re.match(r"^([A-Za-z_][\w-]*)\s*:\s*(.*)$", raw.strip())
+            if not m:
+                continue
+            key, value = m.group(1), m.group(2).strip()
+            if value in ("|", ">"):
+                data[key] = ""
+            elif value == "":
+                data[key] = None
+            else:
+                data[key] = _unquote(value)
+            continue
+        if key is None:
+            continue
+        child = raw.strip()
+        if child.startswith("- "):
+            if data.get(key) is None:
+                data[key] = []
+            if isinstance(data[key], list):
+                data[key].append(_unquote(child[2:]))
+            continue
+        m = re.match(r"^([A-Za-z0-9_.\-]+)\s*:\s*(.*)$", child)
+        if m and not isinstance(data.get(key), str):
+            if data.get(key) is None:
+                data[key] = {}
+            if isinstance(data[key], dict):
+                data[key][m.group(1)] = _unquote(m.group(2))
+            continue
+        if isinstance(data.get(key), str):
+            data[key] = (data[key] + " " + child).strip()
+    return data
 
-    pending = [str(q) for q in questions if not question_file_complete(q)]
-    complete = all(not p for p in pending)
 
-    if any(q.name.lower() == "q00_no_valid_questions.md" for q in questions):
-        state = "complete"
-        pending = []
-    elif complete:
-        state = "complete"
-    else:
-        state = "pending_user"
+def short_domain_id(name: str | None) -> str | None:
+    """``d04b_contracts_draft`` -> ``d04b`` (process/standards/question_pyramid.md)."""
+    if not name:
+        return None
+    m = re.match(r"^(d\d+[a-z]?)(?:_|$)", name.strip().strip("`'\" "))
+    return m.group(1) if m else None
 
+
+def _short_ids(names: list[Any] | None) -> list[str]:
+    out: list[str] = []
+    for item in names or []:
+        sid = short_domain_id(str(item))
+        if sid and sid not in out:
+            out.append(sid)
+    return out
+
+
+def as_list(value: Any) -> list[str]:
+    """Front matter list value; ``[]`` written inline reads back as a string, so map it to []."""
+    if isinstance(value, list):
+        return [str(v) for v in value if v not in (None, "")]
+    return []
+
+
+def reassessment_info(path: Path) -> dict[str, Any]:
+    """Read ``reassessment.md`` front matter: run_status, change_refs, frozen touch_order."""
+    fm = read_front_matter(path)
     return {
-        "slot": folder_suffix,
-        "state": state,
-        "pending_files": pending,
-        "question_files": [str(q) for q in questions],
+        "path": str(path),
+        "reassessment_id": fm.get("reassessment_id"),
+        "run_status": str(fm.get("run_status") or ""),
+        "change_refs": as_list(fm.get("change_refs")),
+        "touch_order": as_list(fm.get("touch_order")),
     }
+
+
+IMPACT_ROW_RE = re.compile(
+    r"(?im)^\s*\|\s*(PC-\d{8}-\d{3})\s*\|\s*(touch|no-touch)\s*\|"
+)
+
+
+def impact_effects(path: Path) -> dict[str, str]:
+    """Map change id -> ``touch`` | ``no-touch`` from ``impact_by_domain/{domain}.md``.
+
+    One table row per change id (process/standards/revision_rounds.md, "Impact and execution").
+    """
+    if not path.is_file():
+        return {}
+    return {m.group(1): m.group(2).lower() for m in IMPACT_ROW_RE.finditer(path.read_text(encoding="utf-8"))}
+
+
+DECISION_FILE_RE = re.compile(r"^pr\d{3}tp\d{3}cl\d{3}_[a-z0-9_]+(?:_\d+)?\.md$")
+PAIR_DIR_RE = re.compile(r"^d\d+[a-z]?_vs_d\d+[a-z]?$")
+REQUIRED_PHASE0_HEADINGS = (
+    "## Roles",
+    "## Domains",
+    "## Brownfield",
+    "## Deliverable profile",
+    "## Participants",
+    "## Decision-boundary conditions",
+)
+
+
+def _field(text: str, label: str) -> str | None:
+    m = re.search(rf"(?im)^\s*-\s*\*\*{re.escape(label)}:\*\*\s*(.*?)\s*$", text)
+    return m.group(1).strip() if m else None
+
+
+def parse_decision_file(path: Path) -> dict[str, Any]:
+    """Read the scored header and the stakeholder section of one phase-1 decision file."""
+    text = path.read_text(encoding="utf-8")
+    m = re.search(r"(?ms)^##\s+Stakeholder decision\s*$\n(.*?)(?=^##\s|\Z)", text)
+    section = m.group(1).strip() if m else ""
+    # The template placeholder starts with "{"; an empty section means not answered.
+    answered = bool(section) and not section.startswith("{")
+    return {
+        "path": str(path),
+        "origin": (_field(text, "Origin") or "").lower(),
+        "enters": (_field(text, "Enters this deliverable") or "").lower(),
+        "pair": _field(text, "Pair") or "",
+        "target": short_domain_id(_field(text, "Target domain")),
+        "also_affects": re.findall(r"d\d+[a-z]?", _field(text, "Also affects") or ""),
+        "answered": answered,
+    }
+
+
+def _decision_files(decisions_dir: Path) -> list[Path]:
+    if not decisions_dir.is_dir():
+        return []
+    return sorted(p for p in decisions_dir.glob("*/*.md") if p.is_file())
+
+
+def program_manifest_order(peer_review_root: Path) -> dict[str, Any]:
+    """Frozen domain order from ``{peer_review_root}/program_manifest.md``."""
+    path = peer_review_root / "program_manifest.md"
+    text = _read_text(path)
+    if not text:
+        return {"path": str(path), "exists": False, "frozen": False, "order": []}
+    m = re.search(r"(?im)^\s*-\s*\*\*Order:\*\*\s*\[([^\]]*)\]", text)
+    order = _short_ids(m.group(1).split(",") if m else [])
+    frozen = bool(re.search(r"(?im)^\s*-\s*\*\*Frozen:\*\*\s*yes\b", text))
+    return {"path": str(path), "exists": True, "frozen": frozen, "order": order}
+
+
+def resolve_manifest(review_root: Path, peer_root: Path) -> dict[str, Any]:
+    """Domain list the round must follow (question_pyramid.md, "Frozen domain list").
+
+    A revision round tied to a reassessment uses that run's frozen ``touch_order``;
+    an initial round uses ``program_manifest.md``.
+    """
+    round_fm = read_front_matter(review_root / "round.md")
+    ref = round_fm.get("reassessment_ref")
+    if ref:
+        info = reassessment_info(Path(str(ref)))
+        order = _short_ids(info["touch_order"])
+        ok = info["run_status"] in ("approved", "executing", "complete") and bool(order)
+        detail = (
+            "reassessment approved, touch_order frozen"
+            if ok
+            else f"reassessment run_status={info['run_status'] or 'missing'} "
+            "or touch_order empty; approve the plan first"
+        )
+        return {"source": "reassessment", "path": info["path"], "order": order, "ok": ok, "detail": detail}
+    pm = program_manifest_order(peer_root)
+    if not pm["exists"]:
+        return {
+            "source": "program_manifest",
+            "path": pm["path"],
+            "order": [],
+            "ok": False,
+            "detail": "program_manifest.md missing: write the frozen domain order in phase 0",
+        }
+    ok = pm["frozen"] and bool(pm["order"])
+    return {
+        "source": "program_manifest",
+        "path": pm["path"],
+        "order": pm["order"],
+        "ok": ok,
+        "detail": "program manifest frozen" if ok else "program_manifest.md must be Frozen: yes with an Order list",
+    }
+
+
+def phase0_missing_sections(review_root: Path) -> list[str]:
+    text = _read_text(review_root / "phase0_setup.md")
+    return [h for h in REQUIRED_PHASE0_HEADINGS if h not in text]
+
+
+def _has_files(folder: Path, pattern: str) -> bool:
+    return folder.is_dir() and any(p.is_file() for p in folder.glob(pattern))
+
+
+def phase1_cycle_status(
+    review_root: Path,
+    participants: list[Participant],
+    manifest_order: list[str],
+    this_short: str,
+) -> dict[str, Any]:
+    """One propose / critique / revise / consolidate cycle (process/phases/phase1_questions.md)."""
+    base = review_root / "phase1_questions"
+    proposals_missing = [
+        p.folder_suffix
+        for p in participants
+        if not _has_files(base / "proposals" / p.folder_suffix, "d*.md")
+    ]
+    revisions_missing = [
+        p.folder_suffix
+        for p in participants
+        if not _has_files(base / "revisions" / p.folder_suffix, "d*.md")
+    ]
+    critiques_expected = _expected_critique_files(participants)
+    critiques_missing = [
+        f for f in critiques_expected if not (base / "critiques" / f).is_file()
+    ]
+
+    coverage_path = base / "coverage.md"
+    coverage_lines = [
+        line for line in _read_text(coverage_path).splitlines() if line.lstrip().startswith("|")
+    ]
+    covered = set(re.findall(r"\b(d\d+[a-z]?_vs_d\d+[a-z]?)\b", "\n".join(coverage_lines)))
+    if this_short in manifest_order:
+        pos = manifest_order.index(this_short)
+        expected_pairs = [f"{this_short}_vs_{t}" for t in manifest_order[pos:]]
+    else:
+        expected_pairs = []
+    coverage_missing = [p for p in expected_pairs if p not in covered]
+
+    index_ok = (base / "decisions" / "_index.md").is_file()
+    bad_names: list[str] = []
+    decisions_dir = base / "decisions"
+    if decisions_dir.is_dir():
+        for pair_dir in sorted(p for p in decisions_dir.iterdir() if p.is_dir()):
+            if not PAIR_DIR_RE.fullmatch(pair_dir.name) or not pair_dir.name.startswith(f"{this_short}_vs_"):
+                bad_names.append(str(pair_dir))
+                continue
+            bad_names.extend(
+                str(f) for f in sorted(pair_dir.glob("*.md")) if not DECISION_FILE_RE.fullmatch(f.name)
+            )
+
+    complete = not (
+        proposals_missing
+        or critiques_missing
+        or revisions_missing
+        or not index_ok
+        or not coverage_path.is_file()
+        or coverage_missing
+        or bad_names
+    ) and bool(expected_pairs)
+    return {
+        "complete": complete,
+        "proposals_missing": proposals_missing,
+        "critiques_missing": critiques_missing,
+        "critiques_expected": len(critiques_expected),
+        "revisions_missing": revisions_missing,
+        "decisions_index": index_ok,
+        "coverage_exists": coverage_path.is_file(),
+        "expected_pairs": expected_pairs,
+        "coverage_missing_pairs": coverage_missing,
+        "bad_decision_names": bad_names,
+        "escalations": (base / "escalations.md").is_file(),
+    }
+
+
+def stakeholder_gate(
+    review_root: Path,
+    peer_root: Path,
+    this_short: str,
+    pins: dict[str, str],
+) -> dict[str, Any]:
+    """Unanswered stakeholder-appetite decisions (question_pyramid.md, "What blocks phase 2").
+
+    own_blockers: this domain's own files with enters=yes and an empty stakeholder section.
+    inbound_blockers: parked files from pinned earlier rounds that target this domain (or list
+    it under Also affects) with an empty stakeholder section.
+    """
+    own = []
+    for f in _decision_files(review_root / "phase1_questions" / "decisions"):
+        d = parse_decision_file(f)
+        if d["origin"] == "stakeholder-appetite" and d["enters"] == "yes" and not d["answered"]:
+            own.append(d["path"])
+    inbound = []
+    for up, rid in pins.items():
+        if rid == "legacy":
+            continue
+        up_decisions = peer_root / up / rid / "phase1_questions" / "decisions"
+        for f in _decision_files(up_decisions):
+            d = parse_decision_file(f)
+            if d["origin"] != "stakeholder-appetite" or d["answered"] or d["enters"] != "no":
+                continue
+            if d["target"] == this_short or this_short in d["also_affects"]:
+                inbound.append(d["path"])
+    return {"own_blockers": own, "inbound_blockers": inbound}
+
+
+def boundary_audit_status(folder: Path) -> tuple[bool, str]:
+    """Phase-5 exit gate: independent adversarial audit with no block/needs_human finding."""
+    path = folder / "_internal" / "boundary_audit.json"
+    if not path.is_file():
+        return False, "missing _internal/boundary_audit.json"
+    try:
+        data = _load_json(path)
+    except (json.JSONDecodeError, OSError) as exc:
+        return False, f"invalid boundary_audit.json: {exc}"
+    if not isinstance(data, dict):
+        return False, "boundary_audit.json must be an object"
+    if data.get("status") != "pass":
+        return False, f"boundary audit status is {data.get('status')!r}, expected 'pass'"
+    if data.get("independent_of_leader") is not True:
+        return False, "boundary audit must be independent of the leader"
+    blocking = [
+        f
+        for f in data.get("findings") or []
+        if isinstance(f, dict) and f.get("severity") in ("block", "needs_human")
+    ]
+    if blocking:
+        return False, f"{len(blocking)} blocking finding(s) in boundary audit"
+    return True, "pass"
 
 
 def _has_overview(folder: Path) -> bool:
@@ -1725,9 +2037,25 @@ def _has_internal_consolidation_matrix(folder: Path) -> bool:
     return (folder / "_internal" / "consolidation_matrix.md").is_file()
 
 
+def _has_manifest(folder: Path) -> bool:
+    return (folder / "artifact_manifest.json").is_file()
+
+
 def _phase2_complete(review_root: Path, participants: list[Participant]) -> bool:
     base = review_root / "phase2_initial_proposals"
-    return all(_has_overview(base / p.folder_suffix) for p in participants)
+    return all(
+        _has_overview(base / p.folder_suffix) and _has_manifest(base / p.folder_suffix)
+        for p in participants
+    )
+
+
+def _phase2_missing_manifest(review_root: Path, participants: list[Participant]) -> list[str]:
+    base = review_root / "phase2_initial_proposals"
+    return [
+        str(base / p.folder_suffix / "artifact_manifest.json")
+        for p in participants
+        if _has_overview(base / p.folder_suffix) and not _has_manifest(base / p.folder_suffix)
+    ]
 
 
 def _phase4_complete(review_root: Path, participants: list[Participant]) -> bool:
@@ -1736,7 +2064,7 @@ def _phase4_complete(review_root: Path, participants: list[Participant]) -> bool
         return False
     for p in participants:
         folder = base / p.folder_suffix
-        if not _has_overview(folder):
+        if not _has_overview(folder) or not _has_manifest(folder):
             return False
         if len(participants) > 1 and not _has_internal_revision_log(folder):
             return False
@@ -1795,11 +2123,11 @@ def _find_phase5_folder(review_root: Path) -> Path | None:
 
 def _phase5_complete(review_root: Path, participants: list[Participant]) -> bool:
     folder = _find_phase5_folder(review_root)
-    if folder is None or not (folder / "overview.md").is_file():
+    if folder is None or not _has_overview(folder) or not _has_manifest(folder):
         return False
     if len(participants) > 1 and not _has_internal_consolidation_matrix(folder):
         return False
-    return True
+    return boundary_audit_status(folder)[0]
 
 
 def _phase5_missing_internal(
@@ -1817,21 +2145,30 @@ def _phase5_missing_internal(
     return None
 
 
-def _phase1_all_complete(review_root: Path, participants: list[Participant]) -> bool:
-    return all(
-        phase1_slot_status(review_root, p.folder_suffix)["state"] == "complete"
-        for p in participants
-    )
-
-
-def _next_phase1_slot(
-    review_root: Path, participants: list[Participant]
-) -> Participant | None:
-    for p in participants:
-        st = phase1_slot_status(review_root, p.folder_suffix)["state"]
-        if st in ("not_started", "in_progress", "pending_user"):
-            return p
-    return None
+def _phase1_next_action(cycle: dict[str, Any], gate: dict[str, Any]) -> str:
+    if not cycle.get("expected_pairs"):
+        return "Phase 1 — this domain is not in the frozen manifest; fix program_manifest.md or reassessment touch_order"
+    if cycle.get("proposals_missing"):
+        return "Phase 1 propose — parallel subagents; missing proposals: " + ", ".join(cycle["proposals_missing"])
+    if cycle.get("critiques_missing"):
+        return (
+            f"Phase 1 critique — missing {len(cycle['critiques_missing'])}/"
+            f"{cycle['critiques_expected']} critique files"
+        )
+    if cycle.get("revisions_missing"):
+        return "Phase 1 revise — missing revisions: " + ", ".join(cycle["revisions_missing"])
+    if not cycle.get("decisions_index") or not cycle.get("coverage_exists"):
+        return "Phase 1 consolidate — leader writes decisions/_index.md and coverage.md"
+    if cycle.get("coverage_missing_pairs"):
+        return "Phase 1 consolidate — coverage.md lacks rows: " + ", ".join(cycle["coverage_missing_pairs"])
+    if cycle.get("bad_decision_names"):
+        return "Phase 1 — fix decision file or pair folder names: " + ", ".join(cycle["bad_decision_names"])
+    if gate.get("own_blockers"):
+        return (
+            f"Phase 1 — PAUSE: stakeholder answers needed in {len(gate['own_blockers'])} decision file(s) "
+            "(write under ## Stakeholder decision, or record a deferral)"
+        )
+    return "Phase 1 — complete"
 
 
 def infer_status(
@@ -1844,57 +2181,75 @@ def infer_status(
 ) -> dict[str, Any]:
     review_root = review_root.resolve()
     domain_code = infer_domain_code(review_root)
+    this_short = short_domain_id(domain_code) or domain_code
+    is_round = is_round_id(review_root.name)
+
+    if not is_round:
+        return {
+            "review_root": str(review_root),
+            "llms_peer_review_root": str(llms_root.resolve()),
+            "domain_code": domain_code,
+            "current_phase": 0,
+            "next_action": (
+                "Legacy flat tree (no round folder). Open a timestamped round with init-round; "
+                "the phase 1 cycle (proposals/critiques/revisions/decisions) is the current contract."
+            ),
+            "phases": {},
+        }
+
+    peer_root = review_root.parent.parent
     participants = parse_participants(review_root)
     phase0_ok = (review_root / "phase0_setup.md").is_file()
+    missing_sections = phase0_missing_sections(review_root) if phase0_ok else list(REQUIRED_PHASE0_HEADINGS)
+    manifest = resolve_manifest(review_root, peer_root)
+    pins = resolve_upstream_pins(peer_root, domain_code)
 
-    phase1_slots = {
-        p.folder_suffix: phase1_slot_status(review_root, p.folder_suffix)
-        for p in participants
-    }
-    phase1_done = _phase1_all_complete(review_root, participants) if participants else False
+    cycle = phase1_cycle_status(review_root, participants, manifest["order"], this_short)
+    gate = stakeholder_gate(review_root, peer_root, this_short, pins)
+    phase1_done = bool(cycle["complete"]) and not gate["own_blockers"]
     phase2_done = _phase2_complete(review_root, participants) if participants else False
     phase3_done = _phase3_complete(review_root, participants) if participants else False
     phase4_done = _phase4_complete(review_root, participants) if participants else False
-    phase5_done = (
-        _phase5_complete(review_root, participants) if participants else False
-    )
+    phase5_done = _phase5_complete(review_root, participants) if participants else False
+    phase2_missing_manifest = _phase2_missing_manifest(review_root, participants)
     phase4_missing_internal = _phase4_missing_internal(review_root, participants)
     phase5_missing_internal = _phase5_missing_internal(review_root, participants)
+    phase5_folder = _find_phase5_folder(review_root)
+    phase5_audit = (
+        boundary_audit_status(phase5_folder)[1] if phase5_folder else "no phase 5 folder yet"
+    )
 
     if not phase0_ok:
         current_phase = 0
         next_action = "Complete or validate phase0_setup.md"
+    elif missing_sections:
+        current_phase = 0
+        next_action = "phase0_setup.md lacks sections: " + ", ".join(missing_sections)
+    elif not manifest["ok"]:
+        current_phase = 0
+        next_action = f"Manifest — {manifest['detail']}"
     elif not phase1_done:
         current_phase = 1
-        nxt = _next_phase1_slot(review_root, participants)
-        if nxt is None:
-            next_action = "Phase 1 — dispatch first participant"
-        else:
-            st = phase1_slots[nxt.folder_suffix]["state"]
-            if st == "pending_user":
-                pending = phase1_slots[nxt.folder_suffix]["pending_files"]
-                next_action = (
-                    f"Phase 1 — PAUSE: user answers needed for {nxt.folder_suffix} "
-                    f"({len(pending)} file(s))"
-                )
-            elif st == "not_started":
-                next_action = (
-                    f"Phase 1 — dispatch subagent for {nxt.slot} ({nxt.folder_suffix})"
-                )
-            else:
-                next_action = (
-                    f"Phase 1 — continue {nxt.folder_suffix} (state={st})"
-                )
+        next_action = _phase1_next_action(cycle, gate)
+    elif not phase2_done and gate["inbound_blockers"]:
+        current_phase = 2
+        next_action = (
+            f"Phase 2 — PAUSE: {len(gate['inbound_blockers'])} parked stakeholder decision(s) "
+            "from earlier domains are unanswered"
+        )
     elif not phase2_done:
         current_phase = 2
-        missing = [
-            p.folder_suffix
-            for p in participants
-            if not _has_overview(
-                review_root / "phase2_initial_proposals" / p.folder_suffix
+        if phase2_missing_manifest:
+            next_action = (
+                f"Phase 2 — add artifact_manifest.json for {len(phase2_missing_manifest)} proposal(s)"
             )
-        ]
-        next_action = f"Phase 2 — parallel subagents; missing: {', '.join(missing) or 'none'}"
+        else:
+            missing = [
+                p.folder_suffix
+                for p in participants
+                if not _has_overview(review_root / "phase2_initial_proposals" / p.folder_suffix)
+            ]
+            next_action = f"Phase 2 — parallel subagents; missing: {', '.join(missing) or 'none'}"
     elif not phase3_done:
         current_phase = 3
         expected = _expected_critique_files(participants)
@@ -1906,27 +2261,25 @@ def infer_status(
         missing = [
             p.folder_suffix
             for p in participants
-            if not _has_overview(
-                review_root / "phase4_final_proposals" / p.folder_suffix
-            )
+            if not _has_overview(review_root / "phase4_final_proposals" / p.folder_suffix)
         ]
         if missing:
-            next_action = (
-                f"Phase 4 — parallel subagents; missing overview: {', '.join(missing)}"
-            )
+            next_action = f"Phase 4 — parallel subagents; missing overview: {', '.join(missing)}"
         elif phase4_missing_internal:
-            next_action = (
-                "Phase 4 — add internal revision logs: "
-                f"{len(phase4_missing_internal)} file(s)"
-            )
+            next_action = f"Phase 4 — add internal revision logs: {len(phase4_missing_internal)} file(s)"
         else:
-            next_action = "Phase 4 — parallel subagents; missing: none"
+            next_action = "Phase 4 — add artifact_manifest.json for each final proposal"
     elif not phase5_done:
         current_phase = 5
         if phase5_missing_internal:
             next_action = (
                 "Phase 5 — leader must write client overview.md and "
                 "_internal/consolidation_matrix.md"
+            )
+        elif phase5_folder and not phase5_audit.startswith("pass"):
+            next_action = (
+                "Phase 5 — boundary_adversary audit required (independent of leader): "
+                f"{phase5_audit}"
             )
         else:
             next_action = "Phase 5 — dispatch leader subagent"
@@ -1942,10 +2295,23 @@ def infer_status(
         "domain_standards_root": str(domain_standards_root(llms_root, domain_code)),
         "phase0_setup_ok": phase0_ok,
         "participants": [asdict(p) for p in participants],
+        "manifest": manifest,
         "current_phase": current_phase,
         "phases": {
-            "1": {"complete": phase1_done, "slots": phase1_slots},
-            "2": {"complete": phase2_done},
+            "0": {
+                "complete": phase0_ok and not missing_sections and manifest["ok"],
+                "missing_sections": missing_sections,
+                "manifest": manifest,
+            },
+            "1": {
+                "complete": phase1_done,
+                "cycle": cycle,
+                "stakeholder_gate": gate,
+            },
+            "2": {
+                "complete": phase2_done,
+                "missing_artifact_manifest": phase2_missing_manifest,
+            },
             "3": {
                 "complete": phase3_done,
                 "expected_critique_count": len(_expected_critique_files(participants)),
@@ -1956,8 +2322,9 @@ def infer_status(
             },
             "5": {
                 "complete": phase5_done,
-                "folder": str(_find_phase5_folder(review_root) or ""),
+                "folder": str(phase5_folder or ""),
                 "missing_internal_consolidation_matrix": phase5_missing_internal,
+                "boundary_audit": phase5_audit,
             },
         },
         "next_action": next_action,
@@ -2056,19 +2423,20 @@ def _effective_review_root(args: argparse.Namespace) -> Path:
 def cmd_init_round(args: argparse.Namespace) -> int:
     domain_root = Path(args.domain_root)
     peer = Path(args.peer_review_root) if args.peer_review_root else domain_root.parent
-    change = Path(args.change_pack) if args.change_pack else None
+    ref = Path(args.reassessment_ref) if args.reassessment_ref else None
     try:
         result = init_round(
             domain_root,
             kind=args.kind,
             peer_review_root=peer,
             baseline_round_id=args.baseline,
-            change_pack=change,
+            reassessment_ref=ref,
+            change_ids=args.change_ids,
             summary=args.summary,
             round_id=args.round_id,
             status=args.status,
         )
-    except (FileExistsError, ValueError) as exc:
+    except (FileExistsError, FileNotFoundError, ValueError) as exc:
         print(json.dumps({"error": str(exc)}, indent=2), file=sys.stderr)
         return 1
     print(json.dumps(result, indent=2))
@@ -2114,9 +2482,12 @@ def cmd_set_current(args: argparse.Namespace) -> int:
 
 
 def cmd_phase1_gate(args: argparse.Namespace) -> int:
-    result = phase1_slot_status(_effective_review_root(args), args.slot)
-    print(json.dumps(result, indent=2))
-    return 0 if result["state"] == "complete" else 1
+    """Phase 1 cycle + stakeholder gate for the round (exit 0 only when phase 1 is complete)."""
+    review_root = _effective_review_root(args)
+    status = infer_status(review_root, Path(args.llms_root), resolve_models=False)
+    gate = status.get("phases", {}).get("1") or {"complete": False, "detail": "not a round folder"}
+    print(json.dumps(gate, indent=2))
+    return 0 if gate.get("complete") else 1
 
 
 def cmd_resolve_prompt(args: argparse.Namespace) -> int:
@@ -2324,10 +2695,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", help="Full status JSON (default when --review-root set)", parents=[shared])
 
-    p_gate = sub.add_parser(
-        "phase1-gate", help="Check phase 1 slot completion", parents=[shared]
+    sub.add_parser(
+        "phase1-gate",
+        help="Phase 1 cycle (proposals/critiques/revisions/decisions) and stakeholder gate",
+        parents=[shared],
     )
-    p_gate.add_argument("--slot", required=True, help="Folder suffix e.g. llm1_composer")
 
     p_prompt = sub.add_parser(
         "resolve-prompt", help="Resolve phase prompt file paths", parents=[shared]
@@ -2360,7 +2732,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Consumer peer_review root (default: parent of domain-root)",
     )
     p_init.add_argument("--baseline", default=None, help="Baseline round_id for revision")
-    p_init.add_argument("--change-pack", default=None, help="Path to program change_pack.md")
+    p_init.add_argument(
+        "--reassessment-ref",
+        default=None,
+        help="Path to program_changes/{ts}_{cause}/reassessment.md (revision rounds of a delta)",
+    )
+    p_init.add_argument(
+        "--change-id",
+        dest="change_ids",
+        action="append",
+        default=None,
+        help="PC-YYYYMMDD-NNN this domain applies (repeat). Must be touch for this domain.",
+    )
     p_init.add_argument("--summary", default=None, help="Short round summary for round.md")
     p_init.add_argument(
         "--round-id",
@@ -2426,7 +2809,31 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    p_guard = sub.add_parser(
+        "guard",
+        help="Run process_guard validate on a phase 2/4/5 proposal folder (required before delivery)",
+    )
+    p_guard.add_argument(
+        "--proposal-folder",
+        required=True,
+        help="Folder with artifact_manifest.json (e.g. phase2_initial_proposals/llm1_x)",
+    )
+
     return parser
+
+
+def cmd_guard(args: argparse.Namespace) -> int:
+    """Delegate to llms_peer_review tools/process_guard (boundary_guard.md, section 4)."""
+    llms_root = Path(args.llms_root)
+    script = repo_root_from_llms_root(llms_root) / "tools" / "process_guard" / "process_guard.py"
+    if not script.is_file():
+        print(json.dumps({"error": f"process_guard not found: {script}"}), file=sys.stderr)
+        return 2
+    folder = Path(args.proposal_folder).resolve()
+    if not folder.is_dir():
+        print(json.dumps({"error": f"proposal folder not found: {folder}"}), file=sys.stderr)
+        return 2
+    return subprocess.run([sys.executable, str(script), "validate", str(folder)], check=False).returncode
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2462,6 +2869,7 @@ def main(argv: list[str] | None = None) -> int:
         "resolve-shortlist",
         "init-round",
         "set-current",
+        "guard",
     )
     if not args.review_root and not getattr(args, "domain_root", None):
         if not root_optional:
@@ -2486,6 +2894,7 @@ def main(argv: list[str] | None = None) -> int:
         "list-models": cmd_list_models,
         "resolve-model": cmd_resolve_model,
         "resolve-shortlist": cmd_resolve_shortlist,
+        "guard": cmd_guard,
     }
     return handlers[args.command](args)
 

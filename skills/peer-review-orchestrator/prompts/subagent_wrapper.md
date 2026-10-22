@@ -74,14 +74,24 @@ NOTES: <optional one line>
 
 ### Phase-specific instruction snippets
 
-**Phase 1 — first participant:** No prior LLM questions. Apply relevance test. Write
-`phase1_questions/{{FOLDER_SUFFIX}}/qNN_*.md` or `q00_no_valid_questions.md`.
+**Phase 1 — propose:** Read `program_manifest.md` (or the reassessment `touch_order`) and the parked
+decisions from earlier pinned rounds. Write drafts to `phase1_questions/proposals/{{FOLDER_SUFFIX}}/dNN_slug.md`.
+Each draft: at least three options, one recommended, `tp`/`cl` with citations, origin, pair, target domain,
+enters-this-deliverable flag. Do not write `## Stakeholder decision`.
 
-**Phase 1 — subsequent participant:** Read ALL prior slots under `phase1_questions/`. Do not
-repeat questions already asked. Write only new questions in your folder.
+**Phase 1 — critique:** Write `phase1_questions/critiques/llm{i}_vs_llm{j}.md` covering every draft of the other
+list. Check pair, origin, scores, and whether a draft would change an earlier accepted deliverable (then it goes to
+`escalations.md`, not to a decision).
+
+**Phase 1 — revise:** Update only your own drafts under `phase1_questions/revisions/{{FOLDER_SUFFIX}}/`.
+
+**Phase 1 — consolidate (leader only):** Write `phase1_questions/decisions/{pair_id}/prNNNtpNNNclNNN_slug.md`,
+`decisions/_index.md`, and `coverage.md` (one row per pair from this domain forward, zero rows explained).
 
 **Phase 2:** Write `phase2_initial_proposals/{{FOLDER_SUFFIX}}/overview.md` — **client-facing
-solution only** (no model names or peer-review narration). Add `references.md` when the domain
+solution only** (no model names or peer-review narration) — and `artifact_manifest.json` (sources by role,
+owned decision axes, handoffs; see `process/standards/boundary_guard.md`). Run
+`orchestrator.py guard --proposal-folder <folder>` and fix every finding. Add `references.md` when the domain
 requires References (`client_deliverables.md`: citation codes, no `phase1_questions/llm*` paths).
 Optional subfolders per domain.
 
@@ -89,9 +99,13 @@ Optional subfolders per domain.
 `phase3_crossed_critiques/llm{i}_vs_llm{j}.md` for all j ≠ i.
 
 **Phase 4:** Rewrite client `phase4_final_proposals/{{FOLDER_SUFFIX}}/overview.md` and
-`references.md`. Write post-critique revision log to `_internal/post_critique_revision_log.md`
-(or d01 `_internal/critique_disposition.md`) — not in overview.
+`references.md`, update `artifact_manifest.json`, and run `guard`. Write post-critique revision log to
+`_internal/post_critique_revision_log.md` (or d01 `_internal/critique_disposition.md`) — not in overview.
 
 **Phase 5 (leader):** Write client `phase5_unified_answer_{{LEADER_SUFFIX}}/overview.md`
-(unified technical answer only). Write consolidation matrix to
-`_internal/consolidation_matrix.md`.
+(unified technical answer only), `artifact_manifest.json`, and consolidation matrix to
+`_internal/consolidation_matrix.md`. The leader does not write `_internal/boundary_audit.json`.
+
+**Phase 5 (boundary_adversary, separate subagent):** Verify ownership and consistency among manifest, overview,
+decision records, diagrams, and handoffs. Do not propose architecture. Write `_internal/boundary_audit.json`
+(`status`, `independent_of_leader: true`, `findings`; any `block` or `needs_human` blocks acceptance).

@@ -15,7 +15,8 @@ You are an **impact analyst** for one peer-review domain. Optimize for a focused
 
 ## Read first
 
-1. `{{PROGRAM_DIR}}/change_pack.md` — do not invent deltas beyond this pack
+1. `{{PROGRAM_DIR}}/reassessment.md` (the change ids this run covers) and `{{PROGRAM_DIR}}/change_pack.md`
+   — do not invent deltas beyond the listed `PC-…` statements in `{{PEER_REVIEW_ROOT}}/program_changes/changes/`
 2. `{{LLMS_PEER_REVIEW_ROOT}}/standards/revision_rounds.md`
 3. `{{LLMS_PEER_REVIEW_ROOT}}/standards/domains.md` (catalog order / upstream meaning)
 4. Domain standards:
@@ -29,20 +30,21 @@ You are an **impact analyst** for one peer-review domain. Optimize for a focused
 
 ## Task
 
-Decide whether this domain must be revised for the change pack (`touch` vs `no-touch`).
+For **each change id** listed in `reassessment.md`, decide whether this domain must be revised (`touch`) or not (`no-touch`). A domain is touch when any row is touch.
 
-Write `{{IMPACT_OUT_PATH}}` including at least:
+Write `{{IMPACT_OUT_PATH}}` with one row per change id, exactly in this shape (the orchestrator parses it):
 
 ```text
-verdict: touch | no-touch
-severity: critical | high | medium | low | none
+| change_id | effect | reason |
+| --- | --- | --- |
+| PC-20261015-001 | touch | one line why |
 ```
 
-Plus: why; artifacts / IDs affected; upstream coherence risks; downstream risks; if `touch`, a short suggested revision summary for `round.md`.
+Then, below the table: artifacts / IDs affected; upstream coherence risks; downstream risks; severity (`critical | high | medium | low | none`); if any row is `touch`, a short suggested revision summary for `round.md`.
 
-If you are confident this domain remains coherent **even if** upstream domains are revised in this program, you may add `coherence_ok: true` (only when justified). Otherwise omit it — rollup may promote `no-touch` → `touch` when upstream is `touch`.
+If you are confident this domain remains coherent **even if** upstream domains are revised in this program, you may add `coherence_ok: true` on its own line, with the justification. Otherwise omit it: the rollup promotes the whole domain to `touch` when an earlier domain is touch.
 
-Remove any `TODO_IMPACT` / `PENDING_IMPACT_SUBAGENT` markers.
+Remove the `TODO_IMPACT` marker and the template rows you did not fill.
 
 ## Output rules
 
