@@ -68,7 +68,9 @@ python ~/.config/opencode/skills/peer-review-orchestrator/scripts/orchestrator.p
 
 | Rule | Detail |
 |------|--------|
-| **Phase 1 is sequential** | Never launch two phase-1 subagents in the same turn. LLM *N+1* starts only after LLM *N*'s question session is closed **and** any user answers are recorded in files. |
+| **Phase 1 is one cycle** | Propose → critique → revise → consolidate, once for the whole domain (all pairs). It is not a Q&A chain per LLM (`process/standards/question_pyramid.md`). Propose and critique fan out in parallel; the leader consolidates. |
+| **Frozen manifest** | Phase 0 requires `{peer_review_root}/program_manifest.md` (`Frozen: yes`, `Order:`) for initial rounds. Revision rounds of a delta use the approved reassessment `touch_order`. Never add, drop, or reorder domains inside a run. |
+| **Stakeholder gate** | Unanswered `stakeholder-appetite` decisions with `Enters this deliverable: yes` pause phase 1. Unanswered parked ones from earlier domains (targeting this domain) pause phase 2. Only the user writes `## Stakeholder decision`. |
 | **Parent owns user I/O** | Subagents do not ask the user questions in chat. They write `.md` files; you pause and notify the user. |
 | **Phase 2–4 parallel OK** | One subagent per participant per phase, same turn — unless any returns `NEEDS_USER`. |
 | **NEEDS_USER stops the phase** | Do not start the next participant or next phase until resolved. |
@@ -80,6 +82,9 @@ python ~/.config/opencode/skills/peer-review-orchestrator/scripts/orchestrator.p
 | **Alias matches resolved family** | Phase0 folder/alias must match `folder_alias`. Non-empty `alias_mismatches` → fix phase0 before writing. |
 | **Ground in domain source mirrors** | When the domain has `sources/sources.md`, proposers / critics / leader must open it and the cited `sources/normalized/*.md#slug` excerpts that back non-trivial claims (or the original URL if a mirror is missing). Citation rules: `process/standards/sources.md`. |
 | **Upstream coherence** | On revision rounds, honor `upstream_pins` in `round.md` — cite the pinned accepted rounds of earlier domains (`revision_rounds.md`). |
+| **Boundary gate (phases 2, 4, 5)** | Each proposal folder has `artifact_manifest.json`. Run `orchestrator.py guard --proposal-folder <folder>` (wraps `tools/process_guard validate`) before delivery; a non-zero exit blocks the phase. |
+| **Independent phase-5 audit** | Phase 5 needs `_internal/boundary_audit.json` with `status: pass`, `independent_of_leader: true`, and no `block` or `needs_human` finding. The auditor is a `boundary_adversary` subagent, never the leader (`process/standards/boundary_guard.md`). |
+| **Revision round of a delta** | `init-round --kind revision` takes `--reassessment-ref` and one `--change-id` per change this domain applies. The round id must equal the reassessment timestamp, and the run must be `approved` or `executing`. |
 | **No phases 6–10** | Revisions = new round + phases 0–5. Hand product-wide deltas to **peer-review-delta-reassessment**. |
 
 ## Model configuration
@@ -163,12 +168,12 @@ Regenerate shortlist in the `llms_peer_review` repo: `python tools/llm_selection
 
 ```
 init-round → REVIEW_ROOT (timestamped)
-Phase 0  → validate/create phase0_setup.md          [pause if frame unclear]
-Phase 1  → llm1 → gate → user Q&A → llm2 → …       [strictly sequential]
-Phase 2  → all participants in parallel             [pause on NEEDS_USER]
+Phase 0  → phase0_setup.md + program_manifest.md      [pause if frame unclear]
+Phase 1  → propose ∥ → critique ∥ → revise ∥ → consolidate (leader)  [pause on stakeholder gate]
+Phase 2  → all participants in parallel + manifest + guard  [pause on NEEDS_USER]
 Phase 3  → all critics in parallel                  [pause on NEEDS_USER]
-Phase 4  → all participants in parallel             [pause on NEEDS_USER]
-Phase 5  → leader only                              [pause on NEEDS_USER]
+Phase 4  → all participants in parallel + manifest + guard  [pause on NEEDS_USER]
+Phase 5  → leader, then boundary_adversary audit + guard    [pause on NEEDS_USER]
 ---
 Product-wide stakeholder modifications → peer-review-delta-reassessment
 (new revision rounds per touched domain; not phases 6–10).
@@ -229,47 +234,36 @@ Phase 3: each critic writes **all** `llm{i}_vs_llm{j}.md` files where *i* is the
 Phase 5: only the leader slot from `phase0_setup.md`; resolve with `--phase 5` (pure
 quality among participants → highest slot first; see `leader_selection`).
 
-## Phase 1 — sequential protocol
+## Phase 1 — one cycle, all pairs
 
-**Never** batch phase-1 Task calls.
+Contract: `llms_peer_review/process/phases/phase1_questions.md` and `process/standards/question_pyramid.md`. The cycle runs once for the whole domain. Do not repeat it per pair or per LLM.
 
-For each participant in order (from `list-participants`):
+1. **Propose (parallel).** One subagent per participant writes `phase1_questions/proposals/{folder_suffix}/dNN_slug.md`. Each draft names its pair (`{this_id}_vs_{target_id}`), target domain, origin, `tp`, and `cl`.
+2. **Critique (parallel).** Each participant critiques every other list once: `phase1_questions/critiques/llm{i}_vs_llm{j}.md`. A draft whose pair is wrong is retagged, not split into a new cycle.
+3. **Revise (parallel).** Authors update `phase1_questions/revisions/{folder_suffix}/`.
+4. **Consolidate (leader).** One subagent writes `decisions/{pair_id}/prNNNtpNNNclNNN_slug.md`, `decisions/_index.md`, `coverage.md` (one row per pair from this domain forward), and `escalations.md` when needed.
 
-1. **Preflight**
-
-```bash
-python scripts/orchestrator.py phase1-gate --review-root "<REVIEW_ROOT>" --slot <folder_suffix>
-```
-
-If a prior slot is `pending_user`, stop and list pending files for the user.
-
-2. **Dispatch** one subagent with prior `phase1_questions/**` paths explicitly listed.
-
-3. **Gate** after subagent returns:
+Check progress at any time:
 
 ```bash
-python scripts/orchestrator.py phase1-gate --review-root "<REVIEW_ROOT>" --slot <folder_suffix>
+python scripts/orchestrator.py --review-root "<REVIEW_ROOT>"
 ```
 
-4. If `pending_user` → **PAUSE**. Tell the user which files need answers inside the `.md`
-   files. Do not dispatch the next LLM.
-
-5. If `complete` → next participant.
-
-6. After all participants complete phase 1 → phase 1 done.
+`phases.1.cycle` lists missing proposals, critiques, revisions, coverage rows, and malformed names. `phases.1.stakeholder_gate.own_blockers` lists decision files waiting for the user.
 
 ### Phase 1 user pause template
 
 ```markdown
 ## Phase 1 — answers needed
 
-Slot **llm{N}** ({alias}) has pending questions:
+These decisions are waiting for your answer:
 
-- [ ] `path/to/q01_....md`
-- [ ] `path/to/q02_....md`
+- [ ] `path/to/decisions/d03_vs_d03/pr024tp040cl060_....md`
 
-Reply inside each file under **## User answer**, then tell me "phase 1 llm{N} answered".
+Write your answer under **## Stakeholder decision** in each file (or record a deferral), then tell me "phase 1 answered".
 ```
+
+Empty `## Stakeholder decision` means not reviewed. Never copy the recommendation into that section.
 
 ## Phases 2–4 — parallel protocol
 
@@ -282,8 +276,10 @@ Reply inside each file under **## User answer**, then tell me "phase 1 llm{N} an
 ## Phase 5 — leader only
 
 1. Confirm phase 4 complete for all participants.
-2. Single Task for leader model → writes `phase5_unified_answer_{leader}/` (client `overview.md` + `_internal/consolidation_matrix.md` when multi-proposer).
-3. Validate client `overview.md` and internal matrix (status JSON lists gaps).
+2. Single Task for leader model → writes `phase5_unified_answer_{leader}/` (client `overview.md`, `artifact_manifest.json`, `_internal/consolidation_matrix.md` when multi-proposer).
+3. Run `orchestrator.py guard --proposal-folder <phase5 folder>`. The only failure allowed before the audit exists is the missing audit.
+4. Dispatch a separate `boundary_adversary` subagent (never the leader). It writes `_internal/boundary_audit.json` and does not propose architecture.
+5. Re-run `guard`. Deliver only when the status shows `phases.5.boundary_audit` = `pass` and the guard exits 0.
 
 ## Resume
 
@@ -309,8 +305,9 @@ If `phase0_setup.md` is missing or incomplete (roles, domains, participants, lea
 
 ```bash
 python scripts/orchestrator.py --review-root "<REVIEW_ROOT>"
-python scripts/orchestrator.py phase1-gate --review-root "<REVIEW_ROOT>" --slot llm1_composer
+python scripts/orchestrator.py phase1-gate --review-root "<REVIEW_ROOT>"
 python scripts/orchestrator.py resolve-prompt --review-root "<REVIEW_ROOT>" --phase 2
+python scripts/orchestrator.py guard --proposal-folder "<REVIEW_ROOT>/phase2_initial_proposals/<folder_suffix>"
 python scripts/orchestrator.py resolve-shortlist --domain d06 --phase 2
 ```
 
@@ -318,12 +315,13 @@ python scripts/orchestrator.py resolve-shortlist --domain d06 --phase 2
 
 ```text
 Peer review progress @ REVIEW_ROOT
-- [ ] phase0_setup validated
-- [ ] phase1 llm1 … llmN (sequential)
-- [ ] phase2 all overviews
+- [ ] phase0_setup validated (sections complete; program_manifest frozen)
+- [ ] phase1 cycle: proposals → critiques → revisions → decisions/coverage
+- [ ] phase1 stakeholder gate clear (own_blockers empty)
+- [ ] phase2 all overviews + artifact_manifest.json + guard 0
 - [ ] phase3 all critique pairs
-- [ ] phase4 all final overviews
-- [ ] phase5 leader unified answer
+- [ ] phase4 all final overviews + manifests + guard 0
+- [ ] phase5 leader unified answer + manifest + boundary_audit pass + guard 0
 Current: ___
 Blocking: ___
 ```

@@ -42,15 +42,18 @@ All phases live under the **round** folder (`REVIEW_ROOT`).
 | Phase | Review folder | Entry criterion |
 |-------|---------------|-----------------|
 | 0 | `phase0_setup.md` (+ `round.md`) | Round created (`init-round`); user confirmed frame |
-| 1 | `phase1_questions/llm{N}_{alias}/` | Phase 0 done |
-| 2 | `phase2_initial_proposals/llm{N}_{alias}/` | Phase 1 all slots complete |
-| 3 | `phase3_crossed_critiques/llm{i}_vs_llm{j}.md` | Phase 2 all overviews |
-| 4 | `phase4_final_proposals/llm{N}_{alias}/` (+ `_internal/post_critique_revision_log.md` when N>1) | Phase 3 all ordered pairs |
-| 5 | `phase5_unified_answer_{leader}/` (+ `_internal/consolidation_matrix.md` when N>1) or `phase5_acceptance_check_{critic}/` | Phase 4 all overviews + internal logs |
+| 0 | `phase0_setup.md` (+ `round.md`), `program_manifest.md` at peer-review root | Round created; manifest frozen |
+| 1 | `phase1_questions/proposals/`, `critiques/`, `revisions/`, `decisions/{pair_id}/`, `decisions/_index.md`, `coverage.md`, `escalations.md` (when needed) | Phase 0 done; one cycle for all pairs |
+| 2 | `phase2_initial_proposals/llm{N}_{alias}/` (`overview.md` + `artifact_manifest.json`) | Phase 1 cycle complete and stakeholder gate clear |
+| 3 | `phase3_crossed_critiques/llm{i}_vs_llm{j}.md` | Phase 2 all overviews and manifests |
+| 4 | `phase4_final_proposals/llm{N}_{alias}/` (+ `artifact_manifest.json`, `_internal/post_critique_revision_log.md` when N>1) | Phase 3 all ordered pairs |
+| 5 | `phase5_unified_answer_{leader}/` (+ manifest, `_internal/consolidation_matrix.md` when N>1, `_internal/boundary_audit.json`) | Phase 4 complete; audit `pass` |
 
-**Revisions:** new `init-round --kind revision` (same phases 0–5). Product-wide programs: **peer-review-delta-reassessment** under `program_changes/{datetimestamp}_{cause}/`. Do not use obsolete phases 6–10.
+Pair id: `{dX_id}_vs_{dY_id}` with the short domain id (`d04b_contracts_draft` → `d04b`). Decision file: `pr{priority}tp{tp}cl{cl}_{slug}.md` (see `phase1_questions.md`).
 
-CLI helpers: `init-round`, `resolve-review-root`, `set-current`.
+**Revisions:** `init-round --kind revision --round-id <reassessment ts> --reassessment-ref <run>/reassessment.md --change-id <PC-…>` (same phases 0–5). Product-wide programs: **peer-review-delta-reassessment** under `program_changes/{datetimestamp}_{cause}/`. Do not use obsolete phases 6–10.
+
+CLI helpers: `init-round`, `resolve-review-root`, `set-current`, `phase1-gate`, `guard`.
 
 ## Model map (shortlist-first)
 
@@ -133,16 +136,18 @@ Phase 1 uses **all** strategist slots in table order.
 Leader (phase 5): **Leader LLM** table → folder like `phase5_unified_answer_fable`
 (use the leader slot’s `folder_alias`).
 
-Fallback: scan `{REVIEW_ROOT}/phase1_questions/llm*_*/` directories sorted by name.
+Fallback when phase0 has no table: scan `{REVIEW_ROOT}/phase1_questions/proposals/llm*_*/` directories sorted by name.
 
 ## Subagent read list by phase
 
-### Phase 1 (participant *i*)
+### Phase 1 (propose / critique / revise / consolidate)
 
-- Process overview + phase 1 prompts (generic + domain)
-- `phase0_setup.md`, `initial_request.md`
-- All `phase1_questions/llm{1..i-1}_*/**/*.md` (prior Q&A)
-- Context sources linked from phase 0
+- Process overview + `phase1_questions.md` + `question_pyramid.md` (generic + domain)
+- `phase0_setup.md`, `program_manifest.md`, and the parked decisions of pinned earlier rounds that target this domain
+- Propose: own drafts only as output; read the manifest order and the parked decisions first
+- Critique: the other list's drafts (`phase1_questions/proposals/llm{j}_*`)
+- Revise: own critiques and own drafts
+- Consolidate (leader): all proposals, critiques, revisions
 - Domain `sources/sources.md` when present (and normalized excerpts when a question is grounded in an external fact)
 
 ### Phase 2
@@ -179,17 +184,11 @@ For *N* participants: **N × (N − 1)** files `llm{i}_vs_llm{j}.md` for all ord
 
 Example *N=5*: 20 files.
 
-## Question file completion signals (phase 1 gate)
+## Phase 1 gate signals
 
-A question file is **complete** when any of:
+The cycle is **complete** when: every participant has at least one draft in `proposals/` and in `revisions/`; every ordered critique file exists; `decisions/_index.md` and `coverage.md` exist; every pair from this domain forward has a `coverage.md` row; and every decision file name follows `pr{NNN}tp{NNN}cl{NNN}_{slug}.md` inside its pair folder.
 
-- Header **Status** contains `Answered`, `Closed`, or `Deferred`
-- File name is `q00_no_valid_questions.md`
-- Section `## User answer` has non-empty content after the heading
-
-A slot is **complete** when its folder exists and every `q*.md` is complete.
-
-A slot is **pending_user** when any question file exists and is not complete.
+The **stakeholder gate** is open (phase 1 pauses) while any own decision with `Origin: stakeholder-appetite` and `Enters this deliverable: yes` has an empty `## Stakeholder decision` section. Parked stakeholder decisions from earlier pinned rounds that target this domain block phase 2 instead. An explicit deferral or withdrawal in the section counts as answered.
 
 ## NEEDS_USER (phases 2–5)
 
