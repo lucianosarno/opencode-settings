@@ -376,6 +376,28 @@ class Phase1CycleTest(unittest.TestCase):
         gate = orch.stakeholder_gate(review, self.peer, "d03", {})
         self.assertEqual(gate["own_blockers"], [])
 
+    def test_no_open_decisions_marker_counts_as_draft(self) -> None:
+        review = self._round(self.d03, "20260601T004500Z")
+        self._cycle_files(review, ["d03_vs_d03"])
+        p1 = review / "phase1_questions"
+        # llm2 has no decisions to propose: only the explicit marker in both folders.
+        for sub in ("proposals", "revisions"):
+            (p1 / sub / "llm2_b" / "d01_scope_option.md").unlink()
+            self._write(p1 / sub / "llm2_b" / "_no_open_decisions.md", "# none\n")
+        cycle = orch.phase1_cycle_status(review, self.participants, ["d01", "d03"], "d03")
+        self.assertEqual(cycle["proposals_missing"], [])
+        self.assertEqual(cycle["revisions_missing"], [])
+
+    def test_empty_folder_without_draft_or_marker_is_still_missing(self) -> None:
+        review = self._round(self.d03, "20260601T005000Z")
+        self._cycle_files(review, ["d03_vs_d03"])
+        p1 = review / "phase1_questions"
+        for sub in ("proposals", "revisions"):
+            (p1 / sub / "llm2_b" / "d01_scope_option.md").unlink()
+        cycle = orch.phase1_cycle_status(review, self.participants, ["d01", "d03"], "d03")
+        self.assertEqual(cycle["proposals_missing"], ["llm2_b"])
+        self.assertEqual(cycle["revisions_missing"], ["llm2_b"])
+
     def test_missing_critique_and_bad_decision_name_block_cycle(self) -> None:
         review = self._round(self.d03, "20260601T010000Z")
         self._cycle_files(review, ["d03_vs_d03"])

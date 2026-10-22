@@ -1955,6 +1955,19 @@ def _has_files(folder: Path, pattern: str) -> bool:
     return folder.is_dir() and any(p.is_file() for p in folder.glob(pattern))
 
 
+def no_open_decisions_marker() -> str:
+    """File name an LLM writes in its folder when it has no draft (settings: phase1_cycle)."""
+    phase1 = load_skill_settings().get("phase1_cycle") or {}
+    return phase1.get("no_open_decisions_marker") or "_no_open_decisions.md"
+
+
+def _has_phase1_drafts(folder: Path) -> bool:
+    """A participant's folder counts when it has a draft (``dNN_*.md``) or the explicit no-draft marker."""
+    if _has_files(folder, "d*.md"):
+        return True
+    return (folder / no_open_decisions_marker()).is_file()
+
+
 def phase1_cycle_status(
     review_root: Path,
     participants: list[Participant],
@@ -1966,12 +1979,12 @@ def phase1_cycle_status(
     proposals_missing = [
         p.folder_suffix
         for p in participants
-        if not _has_files(base / "proposals" / p.folder_suffix, "d*.md")
+        if not _has_phase1_drafts(base / "proposals" / p.folder_suffix)
     ]
     revisions_missing = [
         p.folder_suffix
         for p in participants
-        if not _has_files(base / "revisions" / p.folder_suffix, "d*.md")
+        if not _has_phase1_drafts(base / "revisions" / p.folder_suffix)
     ]
     critiques_expected = _expected_critique_files(participants)
     critiques_missing = [
