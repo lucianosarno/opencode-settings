@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "soundFile": "C:\\Windows\\Media\\Windows Notify System Generic.wav",
+  "fallbackSystemSound": "Exclamation",
+  "events": ["permission.asked"]
+}
