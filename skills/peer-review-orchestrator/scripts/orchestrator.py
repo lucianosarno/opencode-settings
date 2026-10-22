@@ -13,6 +13,7 @@ Examples:
   python orchestrator.py resolve-prompt --review-root ... --phase 2
   python orchestrator.py resolve-shortlist --review-root ... --phase 2
   python orchestrator.py list-participants --review-root ...
+  python orchestrator.py guard --proposal-folder path/to/phase2_initial_proposals/llm1_x
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import argparse
 import json
 import re
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -1760,6 +1762,13 @@ def _short_ids(names: list[Any] | None) -> list[str]:
     return out
 
 
+def as_list(value: Any) -> list[str]:
+    """Front matter list value; ``[]`` written inline reads back as a string, so map it to []."""
+    if isinstance(value, list):
+        return [str(v) for v in value if v not in (None, "")]
+    return []
+
+
 def reassessment_info(path: Path) -> dict[str, Any]:
     """Read ``reassessment.md`` front matter: run_status, change_refs, frozen touch_order."""
     fm = read_front_matter(path)
@@ -1767,8 +1776,8 @@ def reassessment_info(path: Path) -> dict[str, Any]:
         "path": str(path),
         "reassessment_id": fm.get("reassessment_id"),
         "run_status": str(fm.get("run_status") or ""),
-        "change_refs": [str(c) for c in (fm.get("change_refs") or [])],
-        "touch_order": [str(d) for d in (fm.get("touch_order") or [])],
+        "change_refs": as_list(fm.get("change_refs")),
+        "touch_order": as_list(fm.get("touch_order")),
     }
 
 
@@ -2800,7 +2809,31 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    p_guard = sub.add_parser(
+        "guard",
+        help="Run process_guard validate on a phase 2/4/5 proposal folder (required before delivery)",
+    )
+    p_guard.add_argument(
+        "--proposal-folder",
+        required=True,
+        help="Folder with artifact_manifest.json (e.g. phase2_initial_proposals/llm1_x)",
+    )
+
     return parser
+
+
+def cmd_guard(args: argparse.Namespace) -> int:
+    """Delegate to llms_peer_review tools/process_guard (boundary_guard.md, section 4)."""
+    llms_root = Path(args.llms_root)
+    script = repo_root_from_llms_root(llms_root) / "tools" / "process_guard" / "process_guard.py"
+    if not script.is_file():
+        print(json.dumps({"error": f"process_guard not found: {script}"}), file=sys.stderr)
+        return 2
+    folder = Path(args.proposal_folder).resolve()
+    if not folder.is_dir():
+        print(json.dumps({"error": f"proposal folder not found: {folder}"}), file=sys.stderr)
+        return 2
+    return subprocess.run([sys.executable, str(script), "validate", str(folder)], check=False).returncode
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2836,6 +2869,7 @@ def main(argv: list[str] | None = None) -> int:
         "resolve-shortlist",
         "init-round",
         "set-current",
+        "guard",
     )
     if not args.review_root and not getattr(args, "domain_root", None):
         if not root_optional:
@@ -2860,6 +2894,7 @@ def main(argv: list[str] | None = None) -> int:
         "list-models": cmd_list_models,
         "resolve-model": cmd_resolve_model,
         "resolve-shortlist": cmd_resolve_shortlist,
+        "guard": cmd_guard,
     }
     return handlers[args.command](args)
 

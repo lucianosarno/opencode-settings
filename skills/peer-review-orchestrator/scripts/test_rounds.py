@@ -526,5 +526,32 @@ class ReassessmentRoundTest(unittest.TestCase):
                          {"PC-20261015-001": "no-touch", "PC-20261015-002": "touch"})
 
 
+class GuardDelegationTest(unittest.TestCase):
+    def test_guard_delegates_to_process_guard_and_propagates_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            llms = Path(tmp) / "llms_peer_review" / "process"
+            llms.mkdir(parents=True)
+            guard_dir = Path(tmp) / "llms_peer_review" / "tools" / "process_guard"
+            guard_dir.mkdir(parents=True)
+            (guard_dir / "process_guard.py").write_text(
+                "import sys\nprint('validate', sys.argv[2])\nsys.exit(3)\n", encoding="utf-8"
+            )
+            folder = Path(tmp) / "phase2_initial_proposals" / "llm1_a"
+            folder.mkdir(parents=True)
+            code = orch.main(
+                ["--llms-root", str(llms), "guard", "--proposal-folder", str(folder)]
+            )
+            self.assertEqual(code, 3)
+
+    def test_guard_refuses_missing_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            llms = Path(tmp) / "process"
+            llms.mkdir()
+            code = orch.main(
+                ["--llms-root", str(llms), "guard", "--proposal-folder", str(Path(tmp) / "nope")]
+            )
+            self.assertEqual(code, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
