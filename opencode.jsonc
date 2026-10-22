@@ -81,7 +81,13 @@
       "npx vitest*": "allow"
     },
     "websearch": "ask",
-    "webfetch": "ask"
+    "webfetch": "ask",
+    // Leitura do repositorio de peer review (process/, standards, dominios) fora do projeto atual.
+    // Escopo restrito: so esta arvore. Demais caminhos externos continuam em "ask".
+    "external_directory": {
+      "*": "ask",
+      "C:/Users/LucianoSoares/Projects/llms_peer_review/**": "allow"
+    }
   },
   // Overrides por agente. O build NAO tem override: herda o "permission" global (edit liberado
   // dentro do repo; shell so com allowlist; caminhos externos pedem aprovacao pelo default "ask").
