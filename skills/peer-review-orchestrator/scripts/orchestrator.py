@@ -1469,6 +1469,11 @@ def open_rounds_with_other_id(
     return conflicts
 
 
+def _copy_phase0_for_revision(src: Path, dst: Path) -> None:
+    """Copy the baseline phase0 but leave ``## Availability`` out, so phase 0 must re-probe."""
+    dst.write_text(strip_availability_section(_read_text(src)), encoding="utf-8")
+
+
 def init_round(
     domain_root: Path,
     *,
@@ -1522,11 +1527,11 @@ def init_round(
             baseline_dir = domain_root / baseline_round_id
             src = baseline_dir / "phase0_setup.md"
             if src.is_file():
-                shutil.copy2(src, round_dir / "phase0_setup.md")
+                _copy_phase0_for_revision(src, round_dir / "phase0_setup.md")
         elif baseline_round_id == "legacy":
             src = domain_root / "phase0_setup.md"
             if src.is_file():
-                shutil.copy2(src, round_dir / "phase0_setup.md")
+                _copy_phase0_for_revision(src, round_dir / "phase0_setup.md")
 
     pins = resolve_upstream_pins(peer_review_root, domain_code)
     summary_text = summary or (
@@ -1804,8 +1809,11 @@ REQUIRED_PHASE0_HEADINGS = (
     "## Brownfield",
     "## Deliverable profile",
     "## Participants",
+    "## Availability",
     "## Decision-boundary conditions",
 )
+AVAILABILITY_SECTION_RE = re.compile(r"(?ms)^##\s+Availability\s*$\n(.*?)(?=^##\s|\Z)")
+AVAILABILITY_STAMP_RE = re.compile(r"^\d{8}T\d{6}Z$")
 
 
 def _field(text: str, label: str) -> str | None:
@@ -1892,8 +1900,72 @@ def phase0_missing_sections(review_root: Path) -> list[str]:
     return [h for h in REQUIRED_PHASE0_HEADINGS if h not in text]
 
 
+def parse_availability(review_root: Path) -> dict[str, dict[str, str]]:
+    """Rows of the ``## Availability`` table in phase0_setup.md, keyed by slot (llm1, …).
+
+    Columns: Slot | Model slug | Result | Error class | Checked (UTC) | Detail.
+    """
+    m = AVAILABILITY_SECTION_RE.search(_read_text(review_root / "phase0_setup.md"))
+    if not m:
+        return {}
+    rows: dict[str, dict[str, str]] = {}
+    for line in m.group(1).splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 6 or not re.fullmatch(r"llm\d+", cells[0], re.IGNORECASE):
+            continue
+        rows[cells[0].lower()] = {
+            "model": cells[1],
+            "result": cells[2].lower(),
+            "error_class": cells[3].lower(),
+            "checked": cells[4],
+            "detail": cells[5],
+        }
+    return rows
+
+
+def availability_gaps(review_root: Path, participants: list[Participant]) -> list[str]:
+    """Reasons the roster is not confirmed reachable yet (empty list = every slot passed).
+
+    A row counts only when it names a real model (not a template placeholder), reads
+    ``available``, and carries a UTC probe stamp ``YYYYMMDDTHHMMSSZ``.
+    """
+    if not participants:
+        return ["no participants listed"]
+    rows = parse_availability(review_root)
+    gaps: list[str] = []
+    for p in participants:
+        row = rows.get(p.slot)
+        if row is None:
+            gaps.append(f"{p.slot} has no row in ## Availability")
+        elif row["model"].startswith("[") or not row["model"]:
+            gaps.append(f"{p.slot} availability row still holds the template placeholder")
+        elif row["result"] != "available":
+            gaps.append(f"{p.slot} {row['model']} is {row['result']} ({row['error_class']})")
+        elif not AVAILABILITY_STAMP_RE.match(row["checked"]):
+            gaps.append(f"{p.slot} has no valid probe stamp (expected YYYYMMDDTHHMMSSZ)")
+    return gaps
+
+
+def strip_availability_section(text: str) -> str:
+    """Drop a copied ``## Availability`` section so the next round must re-probe."""
+    return re.sub(r"(?ms)^##\s+Availability\s*$.*?(?=^##\s|\Z)", "", text)
+
+
 def _has_files(folder: Path, pattern: str) -> bool:
     return folder.is_dir() and any(p.is_file() for p in folder.glob(pattern))
+
+
+def no_open_decisions_marker() -> str:
+    """File name an LLM writes in its folder when it has no draft (settings: phase1_cycle)."""
+    phase1 = load_skill_settings().get("phase1_cycle") or {}
+    return phase1.get("no_open_decisions_marker") or "_no_open_decisions.md"
+
+
+def _has_phase1_drafts(folder: Path) -> bool:
+    """A participant's folder counts when it has a draft (``dNN_*.md``) or the explicit no-draft marker."""
+    if _has_files(folder, "d*.md"):
+        return True
+    return (folder / no_open_decisions_marker()).is_file()
 
 
 def phase1_cycle_status(
@@ -1907,12 +1979,12 @@ def phase1_cycle_status(
     proposals_missing = [
         p.folder_suffix
         for p in participants
-        if not _has_files(base / "proposals" / p.folder_suffix, "d*.md")
+        if not _has_phase1_drafts(base / "proposals" / p.folder_suffix)
     ]
     revisions_missing = [
         p.folder_suffix
         for p in participants
-        if not _has_files(base / "revisions" / p.folder_suffix, "d*.md")
+        if not _has_phase1_drafts(base / "revisions" / p.folder_suffix)
     ]
     critiques_expected = _expected_critique_files(participants)
     critiques_missing = [
@@ -2201,6 +2273,9 @@ def infer_status(
     participants = parse_participants(review_root)
     phase0_ok = (review_root / "phase0_setup.md").is_file()
     missing_sections = phase0_missing_sections(review_root) if phase0_ok else list(REQUIRED_PHASE0_HEADINGS)
+    availability = (
+        availability_gaps(review_root, participants) if phase0_ok and not missing_sections else []
+    )
     manifest = resolve_manifest(review_root, peer_root)
     pins = resolve_upstream_pins(peer_root, domain_code)
 
@@ -2225,6 +2300,12 @@ def infer_status(
     elif missing_sections:
         current_phase = 0
         next_action = "phase0_setup.md lacks sections: " + ", ".join(missing_sections)
+    elif availability:
+        current_phase = 0
+        next_action = (
+            "Availability — roster not confirmed reachable, do not ask for approval: "
+            + "; ".join(availability)
+        )
     elif not manifest["ok"]:
         current_phase = 0
         next_action = f"Manifest — {manifest['detail']}"
@@ -2299,8 +2380,9 @@ def infer_status(
         "current_phase": current_phase,
         "phases": {
             "0": {
-                "complete": phase0_ok and not missing_sections and manifest["ok"],
+                "complete": phase0_ok and not missing_sections and not availability and manifest["ok"],
                 "missing_sections": missing_sections,
+                "availability_gaps": availability,
                 "manifest": manifest,
             },
             "1": {

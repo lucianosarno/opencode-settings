@@ -12,6 +12,10 @@
     "calculation_relative_to_repo": "tools/llm_selection/reports/ranking_calculation_latest.json",
     "notes": "Phase 5 leader = highest pure quality (calculation.quality.value) among the phase-2 proposer roster / phase0 participants — no /est_cost. Does not require a quality-only shortlist from llms_peer_review; the skill re-ranks from ranking_calculation_latest.json. If that file is missing, falls back to the capability_weighted shortlist and sets leader_selection_error."
   },
+  "phase1_cycle": {
+    "no_open_decisions_marker": "_no_open_decisions.md",
+    "notes": "File an LLM writes in its proposals/ or revisions/ folder when it has no decision drafts (dNN_slug.md). The phase-1 cycle counts that folder as complete. Keep in sync with llms_peer_review process/phases/phase1_questions.md."
+  },
   "dispatch": {
     "proposer_slots": 8,
     "unique_provider": true,

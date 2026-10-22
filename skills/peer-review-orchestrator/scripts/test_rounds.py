@@ -288,6 +288,12 @@ PHASE0 = """# Peer review setup
 | llm1 | a | `llm1_a` |
 | llm2 | b | `llm2_b` |
 
+## Availability
+| Slot | Model slug | Result | Error class | Checked (UTC) | Detail |
+| --- | --- | --- | --- | --- | --- |
+| llm1 | a | available | none | 20260601T000000Z | probe replied OK |
+| llm2 | b | available | none | 20260601T000000Z | probe replied OK |
+
 ## Decision-boundary conditions
 - Active conditions: none
 """
@@ -369,6 +375,28 @@ class Phase1CycleTest(unittest.TestCase):
         self.assertTrue(cycle["complete"], cycle)
         gate = orch.stakeholder_gate(review, self.peer, "d03", {})
         self.assertEqual(gate["own_blockers"], [])
+
+    def test_no_open_decisions_marker_counts_as_draft(self) -> None:
+        review = self._round(self.d03, "20260601T004500Z")
+        self._cycle_files(review, ["d03_vs_d03"])
+        p1 = review / "phase1_questions"
+        # llm2 has no decisions to propose: only the explicit marker in both folders.
+        for sub in ("proposals", "revisions"):
+            (p1 / sub / "llm2_b" / "d01_scope_option.md").unlink()
+            self._write(p1 / sub / "llm2_b" / "_no_open_decisions.md", "# none\n")
+        cycle = orch.phase1_cycle_status(review, self.participants, ["d01", "d03"], "d03")
+        self.assertEqual(cycle["proposals_missing"], [])
+        self.assertEqual(cycle["revisions_missing"], [])
+
+    def test_empty_folder_without_draft_or_marker_is_still_missing(self) -> None:
+        review = self._round(self.d03, "20260601T005000Z")
+        self._cycle_files(review, ["d03_vs_d03"])
+        p1 = review / "phase1_questions"
+        for sub in ("proposals", "revisions"):
+            (p1 / sub / "llm2_b" / "d01_scope_option.md").unlink()
+        cycle = orch.phase1_cycle_status(review, self.participants, ["d01", "d03"], "d03")
+        self.assertEqual(cycle["proposals_missing"], ["llm2_b"])
+        self.assertEqual(cycle["revisions_missing"], ["llm2_b"])
 
     def test_missing_critique_and_bad_decision_name_block_cycle(self) -> None:
         review = self._round(self.d03, "20260601T010000Z")
@@ -524,6 +552,104 @@ class ReassessmentRoundTest(unittest.TestCase):
         self.assertEqual(fm["run_status"], "approved")
         self.assertEqual(orch.impact_effects(self.prog / "impact_by_domain" / "d03_information_conceptual.md"),
                          {"PC-20261015-001": "no-touch", "PC-20261015-002": "touch"})
+
+
+class AvailabilityGateTest(unittest.TestCase):
+    """Phase 0 may not reach roster approval until every participant answered a probe."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.peer = Path(self._tmp.name)
+        (self.peer / "program_manifest.md").write_text(MANIFEST, encoding="utf-8")
+        self.d01 = self.peer / "d01_scope"
+        self.d03 = self.peer / "d03_information_conceptual"
+        self.d01.mkdir()
+        self.d03.mkdir()
+        self.participants = [
+            Participant(slot="llm1", alias="a", folder_suffix="llm1_a"),
+            Participant(slot="llm2", alias="b", folder_suffix="llm2_b"),
+        ]
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _round(self, rid: str, text: str = PHASE0) -> Path:
+        orch.init_round(self.d03, kind="initial", peer_review_root=self.peer, round_id=rid)
+        orch.write_current_json(self.d03, rid, "in_progress")
+        review = self.d03 / rid
+        (review / "phase0_setup.md").write_text(text, encoding="utf-8")
+        return review
+
+    @staticmethod
+    def _with_rows(rows: str) -> str:
+        head, _, tail = PHASE0.partition("## Availability")
+        _, _, after = tail.partition("## Decision-boundary conditions")
+        return head + "## Availability" + rows + "\n## Decision-boundary conditions" + after
+
+    def test_all_participants_available_completes_phase0(self) -> None:
+        review = self._round("20260801T000000Z")
+        self.assertEqual(orch.availability_gaps(review, self.participants), [])
+        status = orch.infer_status(review, self.peer, resolve_models=False)
+        self.assertTrue(status["phases"]["0"]["complete"], status["next_action"])
+        self.assertEqual(status["phases"]["0"]["availability_gaps"], [])
+
+    def test_unavailable_llm_blocks_phase0_and_names_error_class(self) -> None:
+        rows = (
+            "\n| --- | --- | --- | --- | --- | --- |\n"
+            "| llm1 | a | available | none | 20260801T000000Z | ok |\n"
+            "| llm2 | b | unavailable | server_unavailable | 20260801T000000Z | HTTP 503 |\n"
+        )
+        review = self._round("20260801T010000Z", self._with_rows(rows))
+        gaps = orch.availability_gaps(review, self.participants)
+        self.assertEqual(gaps, ["llm2 b is unavailable (server_unavailable)"])
+        status = orch.infer_status(review, self.peer, resolve_models=False)
+        self.assertEqual(status["current_phase"], 0)
+        self.assertFalse(status["phases"]["0"]["complete"])
+        self.assertIn("do not ask for approval", status["next_action"])
+        self.assertIn("llm2 b is unavailable", status["next_action"])
+
+    def test_missing_row_and_template_placeholder_do_not_count(self) -> None:
+        rows = (
+            "\n| --- | --- | --- | --- | --- | --- |\n"
+            "| llm1 | a | available | none | 20260801T000000Z | ok |\n"
+            "| llm2 | [resolved Task slug] | available | none | [YYYYMMDDTHHMMSSZ] | … |\n"
+        )
+        review = self._round("20260801T020000Z", self._with_rows(rows))
+        gaps = orch.availability_gaps(review, self.participants)
+        self.assertEqual(len(gaps), 1)
+        self.assertIn("template placeholder", gaps[0])
+
+        only_one = "\n| --- | --- | --- | --- | --- | --- |\n| llm1 | a | available | none | 20260801T000000Z | ok |\n"
+        review2 = self._round("20260801T030000Z", self._with_rows(only_one))
+        self.assertEqual(
+            orch.availability_gaps(review2, self.participants),
+            ["llm2 has no row in ## Availability"],
+        )
+
+    def test_missing_availability_section_lists_it_as_missing(self) -> None:
+        text = PHASE0.partition("## Availability")[0] + "## Decision-boundary conditions\n- Active conditions: none\n"
+        review = self._round("20260801T040000Z", text)
+        status = orch.infer_status(review, self.peer, resolve_models=False)
+        self.assertEqual(status["current_phase"], 0)
+        self.assertIn("## Availability", status["next_action"])
+
+    def test_revision_copy_drops_availability_so_round_must_reprobe(self) -> None:
+        base = self._round("20260802T000000Z")
+        orch.write_current_json(self.d03, "20260802T000000Z", "accepted")
+        self.assertEqual(orch.availability_gaps(base, self.participants), [])
+        rev = orch.init_round(
+            self.d03,
+            kind="revision",
+            peer_review_root=self.peer,
+            baseline_round_id="20260802T000000Z",
+            round_id="20260803T000000Z",
+        )
+        copied = (Path(rev["review_root"]) / "phase0_setup.md").read_text(encoding="utf-8")
+        self.assertNotIn("## Availability", copied)
+        self.assertIn("## Roles", copied)
+        status = orch.infer_status(Path(rev["review_root"]), self.peer, resolve_models=False)
+        self.assertEqual(status["current_phase"], 0)
+        self.assertIn("## Availability", status["next_action"])
 
 
 class GuardDelegationTest(unittest.TestCase):
