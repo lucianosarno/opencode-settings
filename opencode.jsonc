@@ -259,15 +259,14 @@
   },
   // Provider Tencent TokenHub (chaves sk-... de console.cloud.tencent.com/tokenhub/apikey, cobranca por uso).
   // Regiao Guangzhou = https://tokenhub.tencentmaas.com/v1 (API OpenAI-compativel). Model ID em minusculas: hy3.
-  // A chave NAO fica no arquivo: defina a variavel de ambiente TENCENT_TOKENHUB_API_KEY.
-  // Chaves sk-tp-... (Token Plan) usam outro endpoint (/plan/v3) e outro provider; nao misture.
+  // A chave NAO fica aqui: e guardada pela UI do opencode (/connect) em auth.json, sob o ID "tencent-tokenhub".
+  // Sem "apiKey" nas options, o opencode usa a credencial salva da UI. Chaves sk-tp-... (Token Plan) usam /plan/v3; nao misture.
   "provider": {
-    "tencent": {
+    "tencent-tokenhub": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Tencent TokenHub (Guangzhou)",
       "options": {
-        "baseURL": "https://tokenhub.tencentmaas.com/v1",
-        "apiKey": "{env:TENCENT_TOKENHUB_API_KEY}"
+        "baseURL": "https://tokenhub.tencentmaas.com/v1"
       },
       "models": {
         "hy3": {
