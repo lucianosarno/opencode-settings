@@ -277,7 +277,8 @@
     },
     // Provider Kimi (Moonshot AI), chave de platform.kimi.ai/console/api-keys, cobranca por uso (pay per use).
     // Endpoint OpenAI-compativel global: https://api.moonshot.ai/v1 (chaves do platform.kimi.ai funcionam aqui).
-    // A chave NAO fica no arquivo: defina a variavel de ambiente MOONSHOT_API_KEY e reinicie o opencode.
+    // A chave NAO fica no arquivo: cadastre-a com /connect na TUI (selecionar "Kimi (Moonshot AI, pay per use)"),
+    // que grava em ~/.local/share/opencode/auth.json sob o ID "kimi" (conforme docs/providers do opencode).
     // Modelos validos (platform.kimi.ai/docs/models): kimi-k3, kimi-k2.7-code, kimi-k2.6.
     // kimi-k2.5 e moonshot-v1-* foram descontinuados em 31/08/2026 e nao devem ser usados.
     // Nao definir "temperature" aqui: os modelos Kimi K2.x/K3 aceitam apenas valores fixos.
@@ -285,8 +286,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Kimi (Moonshot AI, pay per use)",
       "options": {
-        "baseURL": "https://api.moonshot.ai/v1",
-        "apiKey": "{env:MOONSHOT_API_KEY}"
+        "baseURL": "https://api.moonshot.ai/v1"
       },
       "models": {
         "kimi-k3": {
