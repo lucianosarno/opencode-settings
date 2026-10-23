@@ -257,6 +257,26 @@
       }
     }
   },
+  // Provider Tencent TokenHub (chaves sk-... de console.cloud.tencent.com/tokenhub/apikey, cobranca por uso).
+  // Regiao Guangzhou = https://tokenhub.tencentmaas.com/v1 (API OpenAI-compativel). Model ID em minusculas: hy3.
+  // A chave NAO fica no arquivo: defina a variavel de ambiente TENCENT_TOKENHUB_API_KEY.
+  // Chaves sk-tp-... (Token Plan) usam outro endpoint (/plan/v3) e outro provider; nao misture.
+  "provider": {
+    "tencent": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Tencent TokenHub (Guangzhou)",
+      "options": {
+        "baseURL": "https://tokenhub.tencentmaas.com/v1",
+        "apiKey": "{env:TENCENT_TOKENHUB_API_KEY}"
+      },
+      "models": {
+        "hy3": {
+          "name": "Hy3",
+          "modalities": { "input": ["text"], "output": ["text"] }
+        }
+      }
+    }
+  },
   // Equivalente a cli-config.json "rewind": true (undo/revert de edições).
   "snapshot": true
 }
