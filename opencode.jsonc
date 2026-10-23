@@ -257,6 +257,56 @@
       }
     }
   },
+  // Provider Tencent TokenHub (chaves sk-... de console.cloud.tencent.com/tokenhub/apikey, cobranca por uso).
+  // Regiao Guangzhou = https://tokenhub.tencentmaas.com/v1 (API OpenAI-compativel). Model ID em minusculas: hy3.
+  // A chave NAO fica aqui: e guardada pela UI do opencode (/connect) em auth.json, sob o ID "tencent-tokenhub".
+  // Sem "apiKey" nas options, o opencode usa a credencial salva da UI. Chaves sk-tp-... (Token Plan) usam /plan/v3; nao misture.
+  "provider": {
+    "tencent-tokenhub": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Tencent TokenHub (Guangzhou)",
+      "options": {
+        "baseURL": "https://tokenhub.tencentmaas.com/v1"
+      },
+      "models": {
+        "hy3": {
+          "name": "Hy3",
+          "modalities": { "input": ["text"], "output": ["text"] }
+        }
+      }
+    },
+    // Provider Kimi (Moonshot AI), chave de platform.kimi.ai/console/api-keys, cobranca por uso (pay per use).
+    // Endpoint OpenAI-compativel global: https://api.moonshot.ai/v1 (chaves do platform.kimi.ai funcionam aqui).
+    // A chave NAO fica no arquivo: cadastre-a com /connect na TUI (selecionar "Kimi (Moonshot AI, pay per use)"),
+    // que grava em ~/.local/share/opencode/auth.json sob o ID "kimi" (conforme docs/providers do opencode).
+    // Modelos validos (platform.kimi.ai/docs/models): kimi-k3, kimi-k2.7-code, kimi-k2.6.
+    // kimi-k2.5 e moonshot-v1-* foram descontinuados em 31/08/2026 e nao devem ser usados.
+    // Nao definir "temperature" aqui: os modelos Kimi K2.x/K3 aceitam apenas valores fixos.
+    "kimi": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Kimi (Moonshot AI, pay per use)",
+      "options": {
+        "baseURL": "https://api.moonshot.ai/v1"
+      },
+      "models": {
+        "kimi-k3": {
+          "name": "Kimi K3",
+          "limit": { "context": 1000000, "output": 32768 },
+          "modalities": { "input": ["text", "image"], "output": ["text"] }
+        },
+        "kimi-k2.7-code": {
+          "name": "Kimi K2.7 Code",
+          "limit": { "context": 256000, "output": 32768 },
+          "modalities": { "input": ["text"], "output": ["text"] }
+        },
+        "kimi-k2.6": {
+          "name": "Kimi K2.6",
+          "limit": { "context": 256000, "output": 32768 },
+          "modalities": { "input": ["text", "image"], "output": ["text"] }
+        }
+      }
+    }
+  },
   // Equivalente a cli-config.json "rewind": true (undo/revert de edições).
   "snapshot": true
 }
